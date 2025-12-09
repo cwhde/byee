@@ -1,0 +1,61 @@
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# .NET
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+!*.exe.config
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+*.lock.json
+
+# Visual Studio
+.vs/
+*.rsuser
+*.sln.iml
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Data directory (uploaded files)
+data/
+uploads/
+storage/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log

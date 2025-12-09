@@ -1,0 +1,162 @@
+# Byee Installer for Windows - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$BYEE_URL = "{{BYEE_URL}}"
+$BYEE_BIN_DIR = "$env:LOCALAPPDATA\byee\bin"
+$BYEE_DATA_DIR = "$env:LOCALAPPDATA\byee\data"
+
+function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+
+function Test-Command($cmd) {
+    try {
+        Get-Command $cmd -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Install-Age {
+    if (Test-Command "age") {
+        Write-Success "age already installed"
+        return
+    }
+
+    Write-Info "Installing age encryption tool..."
+    
+    # Try winget first
+    if (Test-Command "winget") {
+        try {
+            winget install --id FiloSottile.age -e --silent
+            if (Test-Command "age") {
+                Write-Success "age installed via winget"
+                return
+            }
+        } catch {}
+    }
+    
+    # Try scoop
+    if (Test-Command "scoop") {
+        try {
+            scoop install age
+            if (Test-Command "age") {
+                Write-Success "age installed via scoop"
+                return
+            }
+        } catch {}
+    }
+    
+    # Manual install from GitHub
+    Write-Info "Installing age from GitHub releases..."
+    
+    $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
+    $version = "v1.1.1"
+    $url = "https://github.com/FiloSottile/age/releases/download/$version/age-$version-windows-$arch.zip"
+    
+    $tempDir = Join-Path $env:TEMP "byee-age-install"
+    $zipFile = Join-Path $tempDir "age.zip"
+    
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $BYEE_BIN_DIR | Out-Null
+    
+    Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing
+    Expand-Archive -Path $zipFile -DestinationPath $tempDir -Force
+    
+    Copy-Item -Path (Join-Path $tempDir "age\age.exe") -Destination $BYEE_BIN_DIR -Force
+    Copy-Item -Path (Join-Path $tempDir "age\age-keygen.exe") -Destination $BYEE_BIN_DIR -Force
+    
+    Remove-Item -Path $tempDir -Recurse -Force
+    
+    Write-Success "age installed to $BYEE_BIN_DIR"
+}
+
+function Install-ByeeClient {
+    Write-Info "Downloading byee client..."
+    
+    New-Item -ItemType Directory -Force -Path $BYEE_BIN_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path $BYEE_DATA_DIR | Out-Null
+    
+    $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    Invoke-WebRequest -Uri "$BYEE_URL/client/windows" -OutFile $clientPath -UseBasicParsing
+    
+    # Create batch wrapper for easier execution
+    $batchWrapper = Join-Path $BYEE_BIN_DIR "byee.cmd"
+    @"
+@echo off
+powershell -ExecutionPolicy Bypass -File "%~dp0byee.ps1" %*
+"@ | Set-Content -Path $batchWrapper -Encoding ASCII
+    
+    Write-Success "byee client installed to $BYEE_BIN_DIR"
+}
+
+function Add-ToPath {
+    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    
+    if ($currentPath -like "*$BYEE_BIN_DIR*") {
+        Write-Success "PATH already includes byee directory"
+        return
+    }
+    
+    Write-Info "Adding byee to PATH..."
+    
+    $newPath = "$currentPath;$BYEE_BIN_DIR"
+    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+    
+    # Update current session
+    $env:PATH = "$env:PATH;$BYEE_BIN_DIR"
+    
+    Write-Success "Added to PATH"
+}
+
+function Main {
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║     Byee - Secure File Transfer        ║" -ForegroundColor Cyan
+    Write-Host "║     Server: $($BYEE_URL.PadRight(24))║" -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Write-Info "Detected OS: Windows"
+    
+    # Check for existing installation
+    $existingClient = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    if (Test-Path $existingClient) {
+        $content = Get-Content $existingClient -Raw
+        if ($content -like "*$BYEE_URL*") {
+            Write-Info "Updating existing byee installation..."
+        } else {
+            Write-Warn "Existing byee installation found for different server"
+            Write-Info "Overwriting with configuration for $BYEE_URL"
+        }
+    }
+    
+    # Install dependencies
+    Install-Age
+    
+    # Install client
+    Install-ByeeClient
+    
+    # Setup PATH
+    Add-ToPath
+    
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║     Installation Complete!              ║" -ForegroundColor Green
+    Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Usage:"
+    Write-Host "  byee .\file.zip           " -ForegroundColor Yellow -NoNewline
+    Write-Host "Send a file"
+    Write-Host "  byee receive <id> <key>  " -ForegroundColor Yellow -NoNewline
+    Write-Host "Receive a file"
+    Write-Host ""
+    Write-Host "Note: Restart your terminal to use 'byee' command" -ForegroundColor Yellow
+}
+
+Main

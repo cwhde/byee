@@ -1,0 +1,347 @@
+# Byee Client for Windows - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+#
+# Usage:
+#   byee .\file.zip              Send a file
+#   byee receive <id> <key>      Receive a file
+
+param(
+    [Parameter(Position=0)]
+    [string]$Command,
+    
+    [Parameter(Position=1)]
+    [string]$Arg1,
+    
+    [Parameter(Position=2)]
+    [string]$Arg2
+)
+
+$ErrorActionPreference = "Stop"
+$BYEE_URL = "{{BYEE_URL}}"
+$BYEE_VERSION = "{{BYEE_VERSION}}"
+
+function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+
+function Format-FileSize($bytes) {
+    if ($bytes -ge 1GB) { return "{0:N2} GB" -f ($bytes / 1GB) }
+    elseif ($bytes -ge 1MB) { return "{0:N2} MB" -f ($bytes / 1MB) }
+    elseif ($bytes -ge 1KB) { return "{0:N2} KB" -f ($bytes / 1KB) }
+    else { return "$bytes B" }
+}
+
+function Test-Dependencies {
+    $deps = @("age", "age-keygen")
+    foreach ($dep in $deps) {
+        if (-not (Get-Command $dep -ErrorAction SilentlyContinue)) {
+            Write-Err "$dep is required but not installed. Run the installer: irm $BYEE_URL | iex"
+        }
+    }
+}
+
+function Send-File($FilePath) {
+    if (-not (Test-Path $FilePath)) {
+        Write-Err "File not found: $FilePath"
+    }
+    
+    $file = Get-Item $FilePath
+    $filename = $file.Name
+    $filesize = $file.Length
+    $filesizeHuman = Format-FileSize $filesize
+    
+    Write-Info "Preparing to send: $filename ($filesizeHuman)"
+    
+    # Generate age key pair
+    $tmpKeyFile = [System.IO.Path]::GetTempFileName()
+    
+    try {
+        $keygenOutput = & age-keygen -o $tmpKeyFile 2>&1
+        $keyContent = Get-Content $tmpKeyFile -Raw
+        
+        # Extract public key and secret key
+        $pubkey = ($keygenOutput | Select-String "public key: (.+)").Matches[0].Groups[1].Value.Trim()
+        $secretKey = ($keyContent | Select-String "(AGE-SECRET-KEY-\S+)").Matches[0].Groups[1].Value
+        
+        Write-Info "Generated encryption key"
+        Write-Info "Encrypting and uploading..."
+        
+        # Create temp file for encrypted data (Windows doesn't do pipes as well as Unix)
+        # But we can still stream to minimize disk usage
+        $tempEncrypted = [System.IO.Path]::GetTempFileName()
+        
+        try {
+            # Progress for encryption
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            
+            # Encrypt file
+            Write-Progress -Activity "Encrypting" -Status "Encrypting $filename..." -PercentComplete 0
+            & age -r $pubkey -o $tempEncrypted $FilePath
+            
+            $encryptedSize = (Get-Item $tempEncrypted).Length
+            Write-Progress -Activity "Encrypting" -Completed
+            
+            # Upload with progress
+            $uri = "$BYEE_URL/upload"
+            
+            # Use HttpClient for streaming upload with progress
+            Add-Type -AssemblyName System.Net.Http
+            
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $client = New-Object System.Net.Http.HttpClient($handler)
+            $client.Timeout = [System.TimeSpan]::FromHours(24)
+            
+            # Read file and upload with progress
+            $fileStream = [System.IO.File]::OpenRead($tempEncrypted)
+            $progressStream = New-Object System.IO.MemoryStream
+            
+            $buffer = New-Object byte[] 81920
+            $totalRead = 0
+            $lastProgressUpdate = 0
+            
+            try {
+                # Copy to memory stream with progress (for smaller files)
+                # For large files, we'd want chunked upload, but this works for now
+                if ($encryptedSize -le 100MB) {
+                    while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $progressStream.Write($buffer, 0, $read)
+                        $totalRead += $read
+                        $percent = [math]::Round(($totalRead / $encryptedSize) * 100, 1)
+                        $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
+                        $speedStr = Format-FileSize $speed
+                        Write-Progress -Activity "Uploading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
+                    }
+                    $progressStream.Position = 0
+                    $content = New-Object System.Net.Http.StreamContent($progressStream)
+                } else {
+                    # For large files, just show indeterminate progress
+                    Write-Progress -Activity "Uploading" -Status "Uploading large file..." -PercentComplete -1
+                    $fileStream.Position = 0
+                    $content = New-Object System.Net.Http.StreamContent($fileStream)
+                }
+                
+                $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+                
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $uri)
+                $request.Content = $content
+                $request.Headers.Add("X-Byee-Filename", $filename)
+                $request.Headers.Add("X-Byee-Size", $filesize.ToString())
+                
+                $response = $client.SendAsync($request).Result
+                $responseBody = $response.Content.ReadAsStringAsync().Result
+                
+                Write-Progress -Activity "Uploading" -Completed
+                
+                if (-not $response.IsSuccessStatusCode) {
+                    Write-Err "Upload failed (HTTP $($response.StatusCode)): $responseBody"
+                }
+                
+                $result = $responseBody | ConvertFrom-Json
+                $fileId = $result.id
+                
+                if (-not $fileId) {
+                    Write-Err "Failed to get file ID from server response"
+                }
+                
+            } finally {
+                $fileStream.Close()
+                $progressStream.Close()
+                $client.Dispose()
+            }
+            
+        } finally {
+            if (Test-Path $tempEncrypted) {
+                Remove-Item $tempEncrypted -Force
+            }
+        }
+        
+    } finally {
+        if (Test-Path $tmpKeyFile) {
+            Remove-Item $tmpKeyFile -Force
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║ Upload complete!                                           ║" -ForegroundColor Green
+    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Share this command with the recipient:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  byee receive $fileId $secretKey" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
+}
+
+function Receive-File($FileId, $SecretKey) {
+    if (-not $FileId -or -not $SecretKey) {
+        Write-Err "Usage: byee receive <id> <key>"
+    }
+    
+    Write-Info "Requesting file info..."
+    
+    # Get file info and claim
+    try {
+        $infoResponse = Invoke-RestMethod -Uri "$BYEE_URL/download/$FileId`?info=true" -Method Get -ErrorAction Stop
+    } catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        if ($statusCode -eq 404) {
+            Write-Err "File not found or already downloaded"
+        } elseif ($statusCode -eq 409) {
+            Write-Err "File already being downloaded by someone else"
+        } else {
+            Write-Err "Failed to get file info: $($_.Exception.Message)"
+        }
+    }
+    
+    $filename = $infoResponse.filename
+    $filesize = $infoResponse.size
+    $filesizeHuman = $infoResponse.size_human
+    $claimToken = $infoResponse.claim_token
+    
+    if (-not $claimToken) {
+        Write-Err "Failed to claim file"
+    }
+    
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host ("║ File: {0,-52} ║" -f $filename) -ForegroundColor Cyan
+    Write-Host ("║ Size: {0,-52} ║" -f $filesizeHuman) -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+    
+    # Confirmation
+    $confirm = Read-Host "Download this file? [y/N]"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Warn "Download cancelled. Note: The file is no longer available (it was claimed)."
+        exit 0
+    }
+    
+    # Check existing file
+    $outputFile = $filename
+    if (Test-Path $outputFile) {
+        $overwrite = Read-Host "File '$outputFile' already exists. Overwrite? [y/N]"
+        if ($overwrite -ne "y" -and $overwrite -ne "Y") {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($filename)
+            $ext = [System.IO.Path]::GetExtension($filename)
+            $counter = 1
+            while (Test-Path $outputFile) {
+                $outputFile = "${base}_${counter}${ext}"
+                $counter++
+            }
+            Write-Info "Saving as: $outputFile"
+        }
+    }
+    
+    Write-Info "Downloading and decrypting..."
+    
+    # Download with progress
+    $tempEncrypted = [System.IO.Path]::GetTempFileName()
+    $tmpKeyFile = [System.IO.Path]::GetTempFileName()
+    
+    try {
+        # Save secret key to temp file
+        $SecretKey | Set-Content $tmpKeyFile -NoNewline
+        
+        # Download
+        Add-Type -AssemblyName System.Net.Http
+        
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $client = New-Object System.Net.Http.HttpClient($handler)
+        $client.Timeout = [System.TimeSpan]::FromHours(24)
+        $client.DefaultRequestHeaders.Add("X-Byee-Claim-Token", $claimToken)
+        
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        
+        try {
+            $response = $client.GetAsync("$BYEE_URL/download/$FileId", [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+            
+            if (-not $response.IsSuccessStatusCode) {
+                Write-Err "Download failed (HTTP $($response.StatusCode))"
+            }
+            
+            $contentLength = $response.Content.Headers.ContentLength
+            $stream = $response.Content.ReadAsStreamAsync().Result
+            $fileStream = [System.IO.File]::Create($tempEncrypted)
+            
+            $buffer = New-Object byte[] 81920
+            $totalRead = 0
+            
+            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fileStream.Write($buffer, 0, $read)
+                $totalRead += $read
+                
+                if ($contentLength -and $contentLength -gt 0) {
+                    $percent = [math]::Round(($totalRead / $contentLength) * 100, 1)
+                    $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
+                    $speedStr = Format-FileSize $speed
+                    Write-Progress -Activity "Downloading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
+                }
+            }
+            
+            $fileStream.Close()
+            $stream.Close()
+            Write-Progress -Activity "Downloading" -Completed
+            
+        } finally {
+            $client.Dispose()
+        }
+        
+        # Decrypt
+        Write-Progress -Activity "Decrypting" -Status "Decrypting file..." -PercentComplete 50
+        & age -d -i $tmpKeyFile -o $outputFile $tempEncrypted
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Decryption failed"
+        }
+        
+        Write-Progress -Activity "Decrypting" -Completed
+        
+    } finally {
+        if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force }
+        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force }
+    }
+    
+    $actualSize = (Get-Item $outputFile).Length
+    $actualSizeHuman = Format-FileSize $actualSize
+    
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+    Write-Host "║ Download complete!                                         ║" -ForegroundColor Green
+    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Saved: $outputFile ($actualSizeHuman)"
+}
+
+function Show-Usage {
+    Write-Host "Byee - Secure one-time file transfer"
+    Write-Host "Server: $BYEE_URL"
+    Write-Host "Version: $BYEE_VERSION"
+    Write-Host ""
+    Write-Host "Usage:"
+    Write-Host "  byee <file>                Send a file"
+    Write-Host "  byee receive <id> <key>    Receive a file"
+    Write-Host "  byee --help                Show this help"
+    Write-Host "  byee --version             Show version"
+}
+
+# Main
+Test-Dependencies
+
+switch -Regex ($Command) {
+    "^$|^--help$|^-h$" {
+        Show-Usage
+    }
+    "^--version$|^-v$" {
+        Write-Host "byee $BYEE_VERSION"
+        Write-Host "Server: $BYEE_URL"
+    }
+    "^receive$|^recv$|^r$" {
+        Receive-File $Arg1 $Arg2
+    }
+    default {
+        # Assume it's a file path
+        Send-File $Command
+    }
+}
