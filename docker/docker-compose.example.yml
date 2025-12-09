@@ -1,0 +1,46 @@
+# Byee - Secure One-Time File Transfer
+# Example docker-compose configuration
+
+services:
+  byee:
+    image: git.juzo.io/juzo/byee:latest
+    container_name: byee
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # REQUIRED: Public URL of your instance (used in generated scripts)
+      - BYEE_PUBLIC_URL=https://byee.example.com
+      
+      # Optional: Storage path (default: /app/data)
+      # - BYEE_STORAGE_PATH=/app/data
+      
+      # Optional: Maximum file size in bytes (default: 100GB)
+      # - BYEE_MAX_FILE_SIZE=107374182400
+      
+      # Optional: Number of words in generated IDs (default: 4)
+      # - BYEE_ID_WORD_COUNT=4
+    volumes:
+      # Persistent storage for encrypted files
+      - byee-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  byee-data:
+    driver: local
+
+# Optional: Add a reverse proxy like Traefik or Caddy
+# Example with Traefik labels:
+#
+#   byee:
+#     labels:
+#       - "traefik.enable=true"
+#       - "traefik.http.routers.byee.rule=Host(`byee.example.com`)"
+#       - "traefik.http.routers.byee.entrypoints=websecure"
+#       - "traefik.http.routers.byee.tls.certresolver=letsencrypt"
+#       - "traefik.http.services.byee.loadbalancer.server.port=8080"
