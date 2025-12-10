@@ -70,9 +70,30 @@ function Get-ServerUrl {
 
 function Test-EncryptionDeps {
     # OpenSSL should be available via Git for Windows or standalone install
-    if (-not (Get-Command "openssl" -ErrorAction SilentlyContinue)) {
-        Write-Err "openssl is required for encryption but not found. Install Git for Windows or OpenSSL."
+    if (Get-Command "openssl" -ErrorAction SilentlyContinue) { return }
+    
+    # Check if Git for Windows openssl exists in standard location but isn't in PATH
+    $gitBinPath = "C:\Program Files\Git\usr\bin"
+    $gitOpenSslPath = "$gitBinPath\openssl.exe"
+    if (Test-Path $gitOpenSslPath) {
+        Write-Info "Found openssl from Git for Windows, adding to PATH permanently..."
+        
+        # Add to current session
+        $env:Path = "$env:Path;$gitBinPath"
+        
+        # Add permanently to user PATH
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$gitBinPath*") {
+            [Environment]::SetEnvironmentVariable("Path", "$userPath;$gitBinPath", "User")
+            Write-Success "openssl is now available (added permanently to user PATH)"
+        } else {
+            Write-Success "openssl is now available"
+        }
+        
+        if (Get-Command "openssl" -ErrorAction SilentlyContinue) { return }
     }
+    
+    Write-Err "openssl is required for encryption but not found. Install Git for Windows or OpenSSL."
 }
 
 function Send-File($FilePath, $Encrypt = $true) {

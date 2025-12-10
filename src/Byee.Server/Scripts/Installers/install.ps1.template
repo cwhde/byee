@@ -105,12 +105,24 @@ function Check-Dependencies {
     if (Test-Command "openssl") { return }
     
     # Check if Git for Windows openssl exists in standard location but isn't in PATH
-    $gitOpenSslPath = "C:\Program Files\Git\usr\bin\openssl.exe"
+    $gitBinPath = "C:\Program Files\Git\usr\bin"
+    $gitOpenSslPath = "$gitBinPath\openssl.exe"
     if (Test-Path $gitOpenSslPath) {
-        Write-Info "Found openssl from Git for Windows, adding to PATH..."
-        $env:Path = "$env:Path;C:\Program Files\Git\usr\bin"
-        if (Test-Command "openssl") {
+        Write-Info "Found openssl from Git for Windows, adding to PATH permanently..."
+        
+        # Add to current session
+        $env:Path = "$env:Path;$gitBinPath"
+        
+        # Add permanently to user PATH
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$gitBinPath*") {
+            [Environment]::SetEnvironmentVariable("Path", "$userPath;$gitBinPath", "User")
+            Write-Success "openssl is now available (added permanently to user PATH)"
+        } else {
             Write-Success "openssl is now available"
+        }
+        
+        if (Test-Command "openssl") {
             return
         }
     }
