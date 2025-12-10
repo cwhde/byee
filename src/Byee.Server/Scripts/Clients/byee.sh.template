@@ -6,6 +6,8 @@
 #   byee ./file.zip                     Send a file (encrypted)
 #   byee ./myFolder                     Send a folder (zipped, encrypted)
 #   byee --no-encrypt ./file.zip        Send without encryption
+#   byee --encrypt-name ./file.zip      Send with encrypted filename
+#   byee --obfuscate ./file.zip         Send with randomized filename
 #   byee receive <id> <key>             Receive a file
 #   byee --server <url> ./file.zip      Use different server temporarily
 #   byee --update                       Update byee client
@@ -16,6 +18,8 @@ BYEE_URL="{{BYEE_URL}}"
 BYEE_VERSION="{{BYEE_VERSION}}"
 BYEE_FOLDERS_ENABLED="false"
 BYEE_SERVER_OVERRIDE=""
+BYEE_ENCRYPT_FILENAME="false"
+BYEE_OBFUSCATE_FILENAME="false"
 
 # Wordlist for passphrase generation (subset - full list on server)
 # 4096 words from EFF wordlist, max 7 chars each
@@ -303,6 +307,18 @@ send_regular_file() {
     filesize=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
     filesize_human=$(format_size "$filesize")
     
+    # Handle filename obfuscation/encryption
+    display_filename="$filename"
+    
+    if [ "$BYEE_OBFUSCATE_FILENAME" = "true" ]; then
+        ext="${filename##*.}"
+        if [ "$ext" = "$filename" ]; then ext=""; else ext=".$ext"; fi
+        # Random 8 char string
+        rand_name=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8 | head -n 1)
+        filename="${rand_name}${ext}"
+        info "Obfuscating filename: $display_filename -> $filename"
+    fi
+    
     if [ "$encrypt" = "true" ]; then
         printf "${BLUE}[INFO]${NC} Preparing to send (encrypted): ${BOLD}%s${NC} (%s)\n" "$filename" "$filesize_human"
         check_deps_encryption
@@ -328,6 +344,15 @@ send_file_encrypted() {
     fi
     
     info "Generated encryption key"
+    
+    if [ "$BYEE_ENCRYPT_FILENAME" = "true" ]; then
+        info "Encrypting filename..."
+        # Encrypt filename (base64 encoded for header safety)
+        filename_enc=$(echo -n "$filename" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A)
+        # Use encrypted filename for upload
+        filename="$filename_enc"
+    fi
+    
     info "Encrypting and uploading..."
     
     # Pipe: file -> openssl enc -> curl (no temp files)
@@ -338,6 +363,7 @@ send_file_encrypted() {
             -H "X-Byee-Filename: $filename" \
             -H "X-Byee-Size: $filesize" \
             -H "X-Byee-Encrypted: true" \
+            -H "X-Byee-Filename-Encrypted: $BYEE_ENCRYPT_FILENAME" \
             --data-binary @- 2>&1)
     curl_exit=$?
     
@@ -444,6 +470,25 @@ receive_file() {
     if [ "$is_folder" = "true" ]; then
         printf "${CYAN} Type: Folder (zipped)${NC}\n"
     fi
+    
+    # Check for encrypted filename
+    is_filename_encrypted=$(echo "$info_response" | jq -r '.is_filename_encrypted // false')
+    if [ "$is_filename_encrypted" = "true" ]; then
+        printf "${CYAN} Filename: ${YELLOW}Hidden (Encrypted)${NC}\n"
+        
+        # If we have the key, we can show the real name
+        if [ -n "$secret_key" ]; then
+             # Decrypt filename
+             real_filename=$(echo "$filename" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$secret_key" -a -A 2>/dev/null)
+             if [ -n "$real_filename" ]; then
+                 printf "${CYAN} Real Name: ${BOLD}%s${NC}\n" "$real_filename"
+                 filename="$real_filename"
+             else
+                 warn "Failed to decrypt filename with provided key"
+             fi
+        fi
+    fi
+
     printf "${CYAN}========================================${NC}\n"
     printf "\n"
     
@@ -606,6 +651,8 @@ usage() {
     printf "  byee <folder>                     Send a folder (if folder support enabled)\n"
     printf "  byee --no-encrypt <file>          Send without encryption\n"
     printf "  byee receive <id> [key]           Receive a file\n"
+    printf "  byee --encrypt-name <file>        Send with encrypted filename\n"
+    printf "  byee --obfuscate <file>           Send with randomized filename\n"
     printf "  byee --server <url> <file>        Use different server temporarily\n"
     printf "  byee --server <url> receive ...   Receive from different server\n"
     printf "\n"
@@ -668,6 +715,16 @@ main() {
         --no-encrypt|-n)
             shift
             send_file "$1" "false"
+            ;;
+        --encrypt-name|-e)
+            BYEE_ENCRYPT_FILENAME="true"
+            shift
+            send_file "$1" "true"
+            ;;
+        --obfuscate|-o)
+            BYEE_OBFUSCATE_FILENAME="true"
+            shift
+            send_file "$1" "true"
             ;;
         *)
             send_file "$1" "true"

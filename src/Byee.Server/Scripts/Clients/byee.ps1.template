@@ -5,6 +5,8 @@
 #   byee .\file.zip                     Send a file (encrypted by default)
 #   byee .\myFolder                     Send a folder (if folder support enabled)
 #   byee --no-encrypt .\file.zip        Send without encryption
+#   byee --encrypt-name .\file.zip      Send with encrypted filename
+#   byee --obfuscate .\file.zip         Send with randomized filename
 #   byee receive <id> <key>             Receive a file
 #   byee --server <url> .\file.zip      Use different server temporarily
 #   byee --update                       Update byee client
@@ -30,6 +32,8 @@ $BYEE_URL = "{{BYEE_URL}}"
 $BYEE_VERSION = "{{BYEE_VERSION}}"
 $BYEE_FOLDERS_ENABLED = $false
 $script:ServerOverride = ""
+$script:EncryptFilename = $false
+$script:ObfuscateFilename = $false
 
 # Wordlist for passphrase generation (4096 words from EFF wordlist)
 $BYEE_WORDLIST = "{{BYEE_WORDLIST}}" -split ","
@@ -89,6 +93,16 @@ function Send-File($FilePath, $Encrypt = $true) {
     $filename = $file.Name
     $filesize = $file.Length
     $filesizeHuman = Format-FileSize $filesize
+    
+    # Handle filename obfuscation/encryption
+    $displayFilename = $filename
+    
+    if ($script:ObfuscateFilename) {
+        $ext = [System.IO.Path]::GetExtension($filename)
+        $randName = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})
+        $filename = "$randName$ext"
+        Write-Info "Obfuscating filename: $displayFilename -> $filename"
+    }
     
     if ($Encrypt) {
         Write-Info "Preparing to send (encrypted): $filename ($filesizeHuman)"
@@ -235,6 +249,14 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         $passphrase = New-Passphrase -WordCount 4
         
         Write-Info "Generated encryption key"
+        
+        if ($script:EncryptFilename) {
+            Write-Info "Encrypting filename..."
+            # Encrypt filename with openssl
+            $filenameEnc = $filename | & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A
+            $filename = $filenameEnc
+        }
+
         Write-Info "Encrypting and uploading..."
         
         # Encrypt file with openssl
@@ -248,6 +270,7 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
             "X-Byee-Filename" = $filename
             "X-Byee-Size" = $filesize.ToString()
             "X-Byee-Encrypted" = "true"
+            "X-Byee-Filename-Encrypted" = "$script:EncryptFilename"
         }
         
         try {
@@ -340,6 +363,7 @@ function Receive-File($FileId, $SecretKey) {
     $filesizeHuman = $infoResponse.size_human
     $claimToken = $infoResponse.claim_token
     $isFolder = [bool]$infoResponse.is_folder
+    $isFilenameEncrypted = [bool]$infoResponse.is_filename_encrypted
     $isEncrypted = [bool]$SecretKey
     
     if (-not $claimToken) {
@@ -348,8 +372,25 @@ function Receive-File($FileId, $SecretKey) {
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host " File: $filename" -ForegroundColor Cyan
     Write-Host " Size: $filesizeHuman" -ForegroundColor Cyan
+    
+    if ($isFilenameEncrypted) {
+        Write-Host " Filename: Hidden (Encrypted)" -ForegroundColor Yellow
+        
+        if ($SecretKey) {
+            # Decrypt filename
+            $realFilename = $filename | & openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$SecretKey" -a -A 2>&1
+            if ($LASTEXITCODE -eq 0 -and $realFilename) {
+                Write-Host " Real Name: $realFilename" -ForegroundColor Cyan
+                $filename = $realFilename
+            } else {
+                Write-Warn "Failed to decrypt filename with provided key"
+            }
+        }
+    } else {
+        Write-Host " File: $filename" -ForegroundColor Cyan
+    }
+
     Write-Host " Encrypted: $(if ($isEncrypted) { 'Yes' } else { 'No' })" -ForegroundColor Cyan
     if ($isFolder) {
         Write-Host " Type: Folder (zipped)" -ForegroundColor Cyan
@@ -487,6 +528,8 @@ function Show-Usage {
     Write-Host "  byee <file>                       Send a file (encrypted by default)"
     Write-Host "  byee <folder>                     Send a folder (if folder support enabled)"
     Write-Host "  byee --no-encrypt <file>          Send without encryption"
+    Write-Host "  byee --encrypt-name <file>        Send with encrypted filename"
+    Write-Host "  byee --obfuscate <file>           Send with randomized filename"
     Write-Host "  byee receive <id> [key]           Receive a file"
     Write-Host "  byee --server <url> <file>        Use different server temporarily"
     Write-Host "  byee --server <url> receive ...   Receive from different server"
@@ -534,6 +577,14 @@ switch -Regex ($Command) {
     }
     "^--no-encrypt$|^-n$" {
         Send-File $Arg1 $false
+    }
+    "^--encrypt-name$|^-e$" {
+        $script:EncryptFilename = $true
+        Send-File $Arg1 $true
+    }
+    "^--obfuscate$|^-o$" {
+        $script:ObfuscateFilename = $true
+        Send-File $Arg1 $true
     }
     default {
         Send-File $Command $true
