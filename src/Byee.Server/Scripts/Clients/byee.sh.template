@@ -6,7 +6,7 @@
 #   byee ./file.zip                     Send a file (encrypted)
 #   byee ./myFolder                     Send a folder (zipped, encrypted)
 #   byee --no-encrypt ./file.zip        Send without encryption
-#   byee receive <id> [key]             Receive a file
+#   byee receive <id> <key>             Receive a file
 #   byee --server <url> ./file.zip      Use different server temporarily
 #   byee --update                       Update byee client
 #   byee --uninstall                    Uninstall byee
@@ -16,6 +16,10 @@ BYEE_URL="{{BYEE_URL}}"
 BYEE_VERSION="{{BYEE_VERSION}}"
 BYEE_FOLDERS_ENABLED="false"
 BYEE_SERVER_OVERRIDE=""
+
+# Wordlist for passphrase generation (subset - full list on server)
+# 4096 words from EFF wordlist, max 7 chars each
+BYEE_WORDLIST='{{BYEE_WORDLIST}}'
 
 # Colors
 if [ -t 1 ]; then
@@ -54,33 +58,49 @@ format_size() {
     fi
 }
 
-# Shorten the age secret key
-shorten_key() {
-    echo "$1" | sed 's/^AGE-SECRET-KEY-//'
-}
-
-# Expand shortened key back to full format
-expand_key() {
-    key="$1"
-    case "$key" in
-        AGE-SECRET-KEY-*) echo "$key" ;;
-        *) echo "AGE-SECRET-KEY-$key" ;;
-    esac
+# Generate a random passphrase (4 words separated by hyphens)
+generate_passphrase() {
+    word_count=${1:-4}
+    words=""
+    
+    # Count words in the wordlist
+    total_words=$(echo "$BYEE_WORDLIST" | tr ',' '\n' | wc -l | tr -d ' ')
+    
+    for i in $(seq 1 $word_count); do
+        # Generate random index using /dev/urandom
+        if [ -r /dev/urandom ]; then
+            rand=$(od -A n -t u4 -N 4 /dev/urandom | tr -d ' ')
+            index=$((rand % total_words + 1))
+        else
+            # Fallback to awk's random (less secure but works everywhere)
+            index=$(awk -v max="$total_words" 'BEGIN{srand(); print int(rand()*max)+1}')
+        fi
+        
+        word=$(echo "$BYEE_WORDLIST" | tr ',' '\n' | sed -n "${index}p")
+        
+        if [ -z "$words" ]; then
+            words="$word"
+        else
+            words="${words}-${word}"
+        fi
+    done
+    
+    echo "$words"
 }
 
 # Check basic dependencies
 check_deps_basic() {
-    for cmd in curl jq; do
+    for cmd in curl jq openssl; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             error "$cmd is required but not installed. Run the installer: curl -fsSL $BYEE_URL | sh"
         fi
     done
 }
 
-# Check encryption dependencies
+# Check encryption dependencies (openssl should always be available)
 check_deps_encryption() {
-    if ! command -v age >/dev/null 2>&1; then
-        error "age is required for encryption. Run the installer: curl -fsSL $BYEE_URL | sh"
+    if ! command -v openssl >/dev/null 2>&1; then
+        error "openssl is required for encryption but not found"
     fi
 }
 
@@ -179,22 +199,17 @@ send_folder() {
     fi
 }
 
-# Send folder encrypted (pipe zip -> age -> curl)
+# Send folder encrypted (pipe zip -> openssl -> curl)
 send_folder_encrypted() {
     folder="$1"
     foldername="$2"
     server_url=$(get_server_url)
     
-    # Generate age key pair
-    tmp_key=$(mktemp -u)
-    age-keygen -o "$tmp_key" 2>/dev/null
-    pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
-    secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
-    short_key=$(shorten_key "$secret_key")
+    # Generate passphrase (4 words)
+    passphrase=$(generate_passphrase 4)
     
-    if [ -z "$pubkey" ]; then
-        rm -f "$tmp_key"
-        error "Failed to generate encryption key"
+    if [ -z "$passphrase" ]; then
+        error "Failed to generate encryption passphrase"
     fi
     
     info "Generated encryption key"
@@ -202,10 +217,10 @@ send_folder_encrypted() {
     # Get original folder size for header
     foldersize=$(get_folder_size "$folder")
     
-    # Pipe: zip -> age -> curl (no temp files)
+    # Pipe: zip -> openssl enc -> curl (no temp files)
     cd "$(dirname "$folder")"
     response=$(zip -r -q - "$(basename "$folder")" | \
-        age -r "$pubkey" | \
+        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:${passphrase}" | \
         curl -s --fail -X POST "${server_url}/upload" \
             -H "Content-Type: application/octet-stream" \
             -H "X-Byee-Filename: ${foldername}.zip" \
@@ -215,8 +230,6 @@ send_folder_encrypted() {
             --data-binary @- 2>&1)
     curl_exit=$?
     cd - >/dev/null
-    
-    rm -f "$tmp_key"
     
     if [ $curl_exit -ne 0 ]; then
         error "Upload failed: $response"
@@ -234,7 +247,7 @@ send_folder_encrypted() {
     printf "${GREEN}========================================${NC}\n"
     printf "\n"
     printf "Share this command with the recipient:\n\n"
-    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$short_key"
+    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$passphrase"
     printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
 }
 
@@ -307,41 +320,26 @@ send_file_encrypted() {
     filesize="$3"
     server_url=$(get_server_url)
     
-    # Generate age key pair
-    tmp_key=$(mktemp -u)  # -u creates a name without creating the file
-    age-keygen -o "$tmp_key" 2>/dev/null
-    # Public key is stored as a comment in the key file
-    pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
-    secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
-    short_key=$(shorten_key "$secret_key")
+    # Generate passphrase (4 words)
+    passphrase=$(generate_passphrase 4)
     
-    if [ -z "$pubkey" ]; then
-        rm -f "$tmp_key"
-        error "Failed to generate encryption key"
+    if [ -z "$passphrase" ]; then
+        error "Failed to generate encryption passphrase"
     fi
     
     info "Generated encryption key"
     info "Encrypting and uploading..."
     
-    # Create temp file for encrypted data
-    tmp_encrypted=$(mktemp)
-    
-    # Encrypt file
-    if ! age -r "$pubkey" -o "$tmp_encrypted" "$file"; then
-        rm -f "$tmp_key" "$tmp_encrypted"
-        error "Encryption failed"
-    fi
-    
-    # Upload - use --fail-with-body if available, otherwise just --fail
-    response=$(curl -s --fail -X POST "${server_url}/upload" \
-        -H "Content-Type: application/octet-stream" \
-        -H "X-Byee-Filename: $filename" \
-        -H "X-Byee-Size: $filesize" \
-        -H "X-Byee-Encrypted: true" \
-        --data-binary @"$tmp_encrypted" 2>&1)
+    # Pipe: file -> openssl enc -> curl (no temp files)
+    response=$(cat "$file" | \
+        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:${passphrase}" | \
+        curl -s --fail -X POST "${server_url}/upload" \
+            -H "Content-Type: application/octet-stream" \
+            -H "X-Byee-Filename: $filename" \
+            -H "X-Byee-Size: $filesize" \
+            -H "X-Byee-Encrypted: true" \
+            --data-binary @- 2>&1)
     curl_exit=$?
-    
-    rm -f "$tmp_key" "$tmp_encrypted"
     
     if [ $curl_exit -ne 0 ]; then
         error "Upload failed: $response"
@@ -359,7 +357,7 @@ send_file_encrypted() {
     printf "${GREEN}========================================${NC}\n"
     printf "\n"
     printf "Share this command with the recipient:\n\n"
-    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$short_key"
+    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$passphrase"
     printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
 }
 
@@ -484,10 +482,7 @@ receive_file() {
         check_deps_encryption
         info "Downloading and decrypting..."
         
-        full_key=$(expand_key "$secret_key")
-        tmp_key=$(mktemp)
         tmp_encrypted=$(mktemp)
-        echo "$full_key" > "$tmp_key"
         
         # Download to temp file
         curl -s --fail -o "$tmp_encrypted" "${server_url}/download/${file_id}" \
@@ -495,17 +490,17 @@ receive_file() {
         curl_exit=$?
         
         if [ $curl_exit -ne 0 ]; then
-            rm -f "$tmp_key" "$tmp_encrypted"
+            rm -f "$tmp_encrypted"
             error "Download failed"
         fi
         
-        # Decrypt
-        if ! age -d -i "$tmp_key" -o "$output_file" "$tmp_encrypted"; then
-            rm -f "$tmp_key" "$tmp_encrypted"
-            error "Decryption failed"
+        # Decrypt with openssl
+        if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -in "$tmp_encrypted" -out "$output_file" -pass "pass:${secret_key}"; then
+            rm -f "$tmp_encrypted"
+            error "Decryption failed - wrong key?"
         fi
         
-        rm -f "$tmp_key" "$tmp_encrypted"
+        rm -f "$tmp_encrypted"
     else
         info "Downloading..."
         
