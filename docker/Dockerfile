@@ -17,8 +17,8 @@ RUN dotnet publish src/Byee.Server/Byee.Server.csproj -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
 WORKDIR /app
 
-# Install ca-certificates for HTTPS
-RUN apk add --no-cache ca-certificates tzdata
+# Install ca-certificates for HTTPS and curl for healthcheck
+RUN apk add --no-cache ca-certificates tzdata curl
 
 # Create non-root user
 RUN addgroup -g 1000 byee && \
@@ -45,6 +45,6 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["dotnet", "Byee.Server.dll"]
