@@ -33,16 +33,12 @@ function Format-FileSize($bytes) {
     else { return "$bytes B" }
 }
 
-# Shorten age key (remove AGE-SECRET-KEY- prefix)
 function Get-ShortKey($key) {
     return $key -replace "^AGE-SECRET-KEY-", ""
 }
 
-# Expand shortened key back to full format
 function Get-FullKey($key) {
-    if ($key -match "^AGE-SECRET-KEY-") {
-        return $key
-    }
+    if ($key -match "^AGE-SECRET-KEY-") { return $key }
     return "AGE-SECRET-KEY-$key"
 }
 
@@ -76,19 +72,16 @@ function Send-File($FilePath, $Encrypt = $true) {
 }
 
 function Send-FileEncrypted($FilePath, $filename, $filesize) {
-    # Generate age key pair - use a unique temp path that doesn't exist
-    # (GetTempFileName creates the file, but age-keygen wants to create it)
-    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([System.Guid]::NewGuid().ToString('N')).txt"
+    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
+    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).age"
     
     try {
-        # Run age-keygen - suppress stderr warnings that cause PowerShell errors
-        $prevErrorAction = $ErrorActionPreference
+        # Generate age key pair
         $ErrorActionPreference = "SilentlyContinue"
         & age-keygen -o $tmpKeyFile 2>$null
-        $ErrorActionPreference = $prevErrorAction
-        $keyContent = Get-Content $tmpKeyFile -Raw
+        $ErrorActionPreference = "Stop"
         
-        # Extract public key and secret key from the key file
+        $keyContent = Get-Content $tmpKeyFile -Raw
         $pubkeyMatch = $keyContent | Select-String "# public key: (.+)"
         if (-not $pubkeyMatch) {
             Write-Err "Failed to get public key from age-keygen output"
@@ -100,168 +93,73 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         Write-Info "Generated encryption key"
         Write-Info "Encrypting and uploading..."
         
-        # Use unique temp path (age -o needs to create the file itself)
-        $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([System.Guid]::NewGuid().ToString('N')).age"
-        
-        try {
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            
-            Write-Progress -Activity "Encrypting" -Status "Encrypting $filename..." -PercentComplete 0
-            & age -r $pubkey -o $tempEncrypted $FilePath
-            
-            $encryptedSize = (Get-Item $tempEncrypted).Length
-            Write-Progress -Activity "Encrypting" -Completed
-            
-            $uri = "$BYEE_URL/upload"
-            Add-Type -AssemblyName System.Net.Http
-            
-            $handler = New-Object System.Net.Http.HttpClientHandler
-            $client = New-Object System.Net.Http.HttpClient($handler)
-            $client.Timeout = [System.TimeSpan]::FromHours(24)
-            
-            $fileStream = [System.IO.File]::OpenRead($tempEncrypted)
-            $progressStream = New-Object System.IO.MemoryStream
-            
-            $buffer = New-Object byte[] 81920
-            $totalRead = 0
-            
-            try {
-                if ($encryptedSize -le 100MB) {
-                    while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                        $progressStream.Write($buffer, 0, $read)
-                        $totalRead += $read
-                        $percent = [math]::Round(($totalRead / $encryptedSize) * 100, 1)
-                        $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
-                        $speedStr = Format-FileSize $speed
-                        Write-Progress -Activity "Uploading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
-                    }
-                    $progressStream.Position = 0
-                    $content = New-Object System.Net.Http.StreamContent($progressStream)
-                } else {
-                    Write-Progress -Activity "Uploading" -Status "Uploading large file..." -PercentComplete -1
-                    $fileStream.Position = 0
-                    $content = New-Object System.Net.Http.StreamContent($fileStream)
-                }
-                
-                $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
-                
-                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $uri)
-                $request.Content = $content
-                $request.Headers.Add("X-Byee-Filename", $filename)
-                $request.Headers.Add("X-Byee-Size", $filesize.ToString())
-                $request.Headers.Add("X-Byee-Encrypted", "true")
-                
-                $response = $client.SendAsync($request).Result
-                $responseBody = $response.Content.ReadAsStringAsync().Result
-                
-                Write-Progress -Activity "Uploading" -Completed
-                
-                if (-not $response.IsSuccessStatusCode) {
-                    Write-Err "Upload failed (HTTP $($response.StatusCode)): $responseBody"
-                }
-                
-                $result = $responseBody | ConvertFrom-Json
-                $fileId = $result.id
-                
-                if (-not $fileId) {
-                    Write-Err "Failed to get file ID from server response"
-                }
-                
-            } finally {
-                $fileStream.Close()
-                $progressStream.Close()
-                $client.Dispose()
-            }
-            
-        } finally {
-            if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force }
+        # Encrypt file
+        & age -r $pubkey -o $tempEncrypted $FilePath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Encryption failed"
         }
         
+        # Upload using Invoke-RestMethod (simple and reliable)
+        $headers = @{
+            "X-Byee-Filename" = $filename
+            "X-Byee-Size" = $filesize.ToString()
+            "X-Byee-Encrypted" = "true"
+        }
+        
+        try {
+            $response = Invoke-RestMethod -Uri "$BYEE_URL/upload" -Method Post -InFile $tempEncrypted -Headers $headers -ContentType "application/octet-stream"
+        } catch {
+            $statusCode = $_.Exception.Response.StatusCode.value__
+            Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
+        }
+        
+        $fileId = $response.id
+        if (-not $fileId) {
+            Write-Err "Failed to get file ID from server response"
+        }
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Upload complete!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Share this command with the recipient:" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  byee receive $fileId $shortKey" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
+        
     } finally {
-        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force }
+        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
     }
-    
-    Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "║ Upload complete!                                           ║" -ForegroundColor Green
-    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Share this command with the recipient:" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  byee receive $fileId $shortKey" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
 }
 
 function Send-FileRaw($FilePath, $filename, $filesize) {
     Write-Info "Uploading..."
     
-    $uri = "$BYEE_URL/upload"
-    Add-Type -AssemblyName System.Net.Http
-    
-    $handler = New-Object System.Net.Http.HttpClientHandler
-    $client = New-Object System.Net.Http.HttpClient($handler)
-    $client.Timeout = [System.TimeSpan]::FromHours(24)
-    
-    $fileStream = [System.IO.File]::OpenRead($FilePath)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $headers = @{
+        "X-Byee-Filename" = $filename
+        "X-Byee-Size" = $filesize.ToString()
+        "X-Byee-Encrypted" = "false"
+    }
     
     try {
-        $progressStream = New-Object System.IO.MemoryStream
-        $buffer = New-Object byte[] 81920
-        $totalRead = 0
-        
-        if ($filesize -le 100MB) {
-            while (($read = $fileStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $progressStream.Write($buffer, 0, $read)
-                $totalRead += $read
-                $percent = [math]::Round(($totalRead / $filesize) * 100, 1)
-                $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
-                $speedStr = Format-FileSize $speed
-                Write-Progress -Activity "Uploading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
-            }
-            $progressStream.Position = 0
-            $content = New-Object System.Net.Http.StreamContent($progressStream)
-        } else {
-            Write-Progress -Activity "Uploading" -Status "Uploading large file..." -PercentComplete -1
-            $fileStream.Position = 0
-            $content = New-Object System.Net.Http.StreamContent($fileStream)
-        }
-        
-        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
-        
-        $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $uri)
-        $request.Content = $content
-        $request.Headers.Add("X-Byee-Filename", $filename)
-        $request.Headers.Add("X-Byee-Size", $filesize.ToString())
-        $request.Headers.Add("X-Byee-Encrypted", "false")
-        
-        $response = $client.SendAsync($request).Result
-        $responseBody = $response.Content.ReadAsStringAsync().Result
-        
-        Write-Progress -Activity "Uploading" -Completed
-        
-        if (-not $response.IsSuccessStatusCode) {
-            Write-Err "Upload failed (HTTP $($response.StatusCode)): $responseBody"
-        }
-        
-        $result = $responseBody | ConvertFrom-Json
-        $fileId = $result.id
-        
-        if (-not $fileId) {
-            Write-Err "Failed to get file ID from server response"
-        }
-        
-    } finally {
-        $fileStream.Close()
-        $progressStream.Close()
-        $client.Dispose()
+        $response = Invoke-RestMethod -Uri "$BYEE_URL/upload" -Method Post -InFile $FilePath -Headers $headers -ContentType "application/octet-stream"
+    } catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
+    }
+    
+    $fileId = $response.id
+    if (-not $fileId) {
+        Write-Err "Failed to get file ID from server response"
     }
     
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "║ Upload complete!                                           ║" -ForegroundColor Green
-    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host " Upload complete!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "Share this command with the recipient:" -ForegroundColor White
     Write-Host ""
@@ -279,7 +177,7 @@ function Receive-File($FileId, $SecretKey) {
     
     # Get file info and claim
     try {
-        $infoResponse = Invoke-RestMethod -Uri "$BYEE_URL/download/$FileId`?info=true" -Method Get -ErrorAction Stop
+        $infoResponse = Invoke-RestMethod -Uri "$BYEE_URL/download/$FileId`?info=true" -Method Get
     } catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
         if ($statusCode -eq 404) {
@@ -302,18 +200,13 @@ function Receive-File($FileId, $SecretKey) {
     }
     
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host ("║ File: {0,-52} ║" -f $filename) -ForegroundColor Cyan
-    Write-Host ("║ Size: {0,-52} ║" -f $filesizeHuman) -ForegroundColor Cyan
-    if ($isEncrypted) {
-        Write-Host "║ Encrypted: Yes                                             ║" -ForegroundColor Cyan
-    } else {
-        Write-Host "║ Encrypted: No                                              ║" -ForegroundColor Cyan
-    }
-    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host " File: $filename" -ForegroundColor Cyan
+    Write-Host " Size: $filesizeHuman" -ForegroundColor Cyan
+    Write-Host " Encrypted: $(if ($isEncrypted) { 'Yes' } else { 'No' })" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     
-    # Confirmation
     $confirm = Read-Host "Download this file? [y/N]"
     if ($confirm -ne "y" -and $confirm -ne "Y") {
         Write-Warn "Download cancelled. Note: The file is no longer available (it was claimed)."
@@ -336,111 +229,44 @@ function Receive-File($FileId, $SecretKey) {
         }
     }
     
-    # Download with progress
-    Add-Type -AssemblyName System.Net.Http
-    
-    $handler = New-Object System.Net.Http.HttpClientHandler
-    $client = New-Object System.Net.Http.HttpClient($handler)
-    $client.Timeout = [System.TimeSpan]::FromHours(24)
-    $client.DefaultRequestHeaders.Add("X-Byee-Claim-Token", $claimToken)
-    
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    
     if ($isEncrypted) {
         Test-EncryptionDeps
         Write-Info "Downloading and decrypting..."
         
-        $tempEncrypted = [System.IO.Path]::GetTempFileName()
-        $tmpKeyFile = [System.IO.Path]::GetTempFileName()
+        $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-dl-$([guid]::NewGuid().ToString('N')).age"
+        $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
         
         try {
             # Expand key and save to temp file
             $fullKey = Get-FullKey $SecretKey
             $fullKey | Set-Content $tmpKeyFile -NoNewline
             
+            # Download encrypted file
+            $headers = @{ "X-Byee-Claim-Token" = $claimToken }
             try {
-                $response = $client.GetAsync("$BYEE_URL/download/$FileId", [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-                
-                if (-not $response.IsSuccessStatusCode) {
-                    Write-Err "Download failed (HTTP $($response.StatusCode))"
-                }
-                
-                $contentLength = $response.Content.Headers.ContentLength
-                $stream = $response.Content.ReadAsStreamAsync().Result
-                $fileStream = [System.IO.File]::Create($tempEncrypted)
-                
-                $buffer = New-Object byte[] 81920
-                $totalRead = 0
-                
-                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $fileStream.Write($buffer, 0, $read)
-                    $totalRead += $read
-                    
-                    if ($contentLength -and $contentLength -gt 0) {
-                        $percent = [math]::Round(($totalRead / $contentLength) * 100, 1)
-                        $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
-                        $speedStr = Format-FileSize $speed
-                        Write-Progress -Activity "Downloading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
-                    }
-                }
-                
-                $fileStream.Close()
-                $stream.Close()
-                Write-Progress -Activity "Downloading" -Completed
-                
-            } finally {
-                $client.Dispose()
+                Invoke-WebRequest -Uri "$BYEE_URL/download/$FileId" -OutFile $tempEncrypted -Headers $headers
+            } catch {
+                Write-Err "Download failed: $($_.Exception.Message)"
             }
             
             # Decrypt
-            Write-Progress -Activity "Decrypting" -Status "Decrypting file..." -PercentComplete 50
             & age -d -i $tmpKeyFile -o $outputFile $tempEncrypted
-            
             if ($LASTEXITCODE -ne 0) {
                 Write-Err "Decryption failed"
             }
             
-            Write-Progress -Activity "Decrypting" -Completed
-            
         } finally {
-            if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force }
-            if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force }
+            if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
         }
     } else {
         Write-Info "Downloading..."
         
+        $headers = @{ "X-Byee-Claim-Token" = $claimToken }
         try {
-            $response = $client.GetAsync("$BYEE_URL/download/$FileId", [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-            
-            if (-not $response.IsSuccessStatusCode) {
-                Write-Err "Download failed (HTTP $($response.StatusCode))"
-            }
-            
-            $contentLength = $response.Content.Headers.ContentLength
-            $stream = $response.Content.ReadAsStreamAsync().Result
-            $fileStream = [System.IO.File]::Create($outputFile)
-            
-            $buffer = New-Object byte[] 81920
-            $totalRead = 0
-            
-            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $fileStream.Write($buffer, 0, $read)
-                $totalRead += $read
-                
-                if ($contentLength -and $contentLength -gt 0) {
-                    $percent = [math]::Round(($totalRead / $contentLength) * 100, 1)
-                    $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { $totalRead / $sw.Elapsed.TotalSeconds } else { 0 }
-                    $speedStr = Format-FileSize $speed
-                    Write-Progress -Activity "Downloading" -Status "$percent% - $speedStr/s" -PercentComplete $percent
-                }
-            }
-            
-            $fileStream.Close()
-            $stream.Close()
-            Write-Progress -Activity "Downloading" -Completed
-            
-        } finally {
-            $client.Dispose()
+            Invoke-WebRequest -Uri "$BYEE_URL/download/$FileId" -OutFile $outputFile -Headers $headers
+        } catch {
+            Write-Err "Download failed: $($_.Exception.Message)"
         }
     }
     
@@ -448,9 +274,9 @@ function Receive-File($FileId, $SecretKey) {
     $actualSizeHuman = Format-FileSize $actualSize
     
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "║ Download complete!                                         ║" -ForegroundColor Green
-    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host " Download complete!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "Saved: $outputFile ($actualSizeHuman)"
 }
@@ -484,7 +310,6 @@ switch -Regex ($Command) {
         Send-File $Arg1 $false
     }
     default {
-        # Assume it's a file path (encrypted by default)
         Send-File $Command $true
     }
 }

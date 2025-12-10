@@ -216,6 +216,9 @@ install_byee_client() {
     mkdir -p "$BYEE_DATA_DIR"
     
     local os=$(detect_os)
+    
+    # Always overwrite existing client
+    rm -f "$BYEE_BIN_DIR/byee"
     curl -fsSL "${BYEE_URL}/client/${os}" -o "$BYEE_BIN_DIR/byee"
     chmod +x "$BYEE_BIN_DIR/byee"
     

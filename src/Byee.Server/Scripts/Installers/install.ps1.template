@@ -82,15 +82,19 @@ function Install-ByeeClient {
     New-Item -ItemType Directory -Force -Path $BYEE_BIN_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path $BYEE_DATA_DIR | Out-Null
     
+    # Always overwrite existing client
     $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    if (Test-Path $clientPath) {
+        Remove-Item $clientPath -Force
+    }
     Invoke-WebRequest -Uri "$BYEE_URL/client/windows" -OutFile $clientPath -UseBasicParsing
     
-    # Create batch wrapper for easier execution
+    # Create batch wrapper for easier execution (always overwrite)
     $batchWrapper = Join-Path $BYEE_BIN_DIR "byee.cmd"
     @"
 @echo off
-powershell -ExecutionPolicy Bypass -File "%~dp0byee.ps1" %*
-"@ | Set-Content -Path $batchWrapper -Encoding ASCII
+powershell -ExecutionPolicy Bypass -Command "& '%~dp0byee.ps1' %*"
+"@ | Set-Content -Path $batchWrapper -Encoding ASCII -Force
     
     Write-Success "byee client installed to $BYEE_BIN_DIR"
 }
