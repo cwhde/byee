@@ -24,8 +24,8 @@ RUN apk add --no-cache ca-certificates tzdata
 RUN addgroup -g 1000 byee && \
     adduser -u 1000 -G byee -s /bin/sh -D byee
 
-# Create data directory
-RUN mkdir -p /app/data && chown -R byee:byee /app/data
+# Create data directories with proper permissions
+RUN mkdir -p /app/data/files && chown -R byee:byee /app/data
 
 # Copy published app
 COPY --from=build /app/publish .

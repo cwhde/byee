@@ -25,10 +25,10 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC='' BOLD=''
 fi
 
-info() { printf "${BLUE}[INFO]${NC} %s\n" "$1"; }
-success() { printf "${GREEN}[OK]${NC} %s\n" "$1"; }
-warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
-error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; exit 1; }
+info() { printf "${BLUE}[INFO]${NC} %b\n" "$1"; }
+success() { printf "${GREEN}[OK]${NC} %b\n" "$1"; }
+warn() { printf "${YELLOW}[WARN]${NC} %b\n" "$1"; }
+error() { printf "${RED}[ERROR]${NC} %b\n" "$1" >&2; exit 1; }
 
 # Format bytes to human readable (using awk for POSIX compatibility)
 format_size() {
@@ -108,7 +108,8 @@ send_file_encrypted() {
     local pubkey
     
     age-keygen -o "$tmp_key" 2>/dev/null
-    pubkey=$(grep "public key:" "$tmp_key" | cut -d: -f2 | tr -d ' ')
+    # Extract public key from the "# public key:" comment line in the key file
+    pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
     local secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
     local short_key=$(shorten_key "$secret_key")
     
@@ -122,7 +123,7 @@ send_file_encrypted() {
     
     if command -v pv >/dev/null 2>&1; then
         # With progress bar using pv
-        response=$(pv -s "$filesize" -N "Encrypting & Uploading" -f "$file" 2>/dev/tty | \
+        response=$(cat "$file" | pv -s "$filesize" -N "Uploading" -f 2>/dev/tty | \
             age -r "$pubkey" | \
             curl -sf -X POST "${BYEE_URL}/upload" \
                 -H "Content-Type: application/octet-stream" \
@@ -188,7 +189,7 @@ send_file_raw() {
     local http_code
     
     if command -v pv >/dev/null 2>&1; then
-        response=$(pv -s "$filesize" -N "Uploading" -f "$file" 2>/dev/tty | \
+        response=$(cat "$file" | pv -s "$filesize" -N "Uploading" -f 2>/dev/tty | \
             curl -sf -X POST "${BYEE_URL}/upload" \
                 -H "Content-Type: application/octet-stream" \
                 -H "X-Byee-Filename: $filename" \
