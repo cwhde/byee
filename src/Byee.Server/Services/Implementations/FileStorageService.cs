@@ -83,14 +83,14 @@ public class FileStorageService : IFileStorageService
         }
     }
 
-    public async Task<Stream?> GetFileStreamAsync(string id, CancellationToken ct = default)
+    public Task<Stream?> GetFileStreamAsync(string id, CancellationToken ct = default)
     {
         var filePath = GetFilePath(id);
         
         if (!File.Exists(filePath))
-            return null;
+            return Task.FromResult<Stream?>(null);
 
-        return new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return Task.FromResult<Stream?>(new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan));
     }
 
     public async Task<FileMetadata?> GetMetadataAsync(string id, CancellationToken ct = default)
