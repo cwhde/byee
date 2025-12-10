@@ -81,11 +81,19 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
     $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([System.Guid]::NewGuid().ToString('N')).txt"
     
     try {
-        $keygenOutput = & age-keygen -o $tmpKeyFile 2>&1
+        # Run age-keygen - suppress stderr warnings that cause PowerShell errors
+        $prevErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & age-keygen -o $tmpKeyFile 2>$null
+        $ErrorActionPreference = $prevErrorAction
         $keyContent = Get-Content $tmpKeyFile -Raw
         
-        # Extract public key and secret key
-        $pubkey = ($keygenOutput | Select-String "public key: (.+)").Matches[0].Groups[1].Value.Trim()
+        # Extract public key and secret key from the key file
+        $pubkeyMatch = $keyContent | Select-String "# public key: (.+)"
+        if (-not $pubkeyMatch) {
+            Write-Err "Failed to get public key from age-keygen output"
+        }
+        $pubkey = $pubkeyMatch.Matches[0].Groups[1].Value.Trim()
         $secretKey = ($keyContent | Select-String "(AGE-SECRET-KEY-\S+)").Matches[0].Groups[1].Value
         $shortKey = Get-ShortKey $secretKey
         
