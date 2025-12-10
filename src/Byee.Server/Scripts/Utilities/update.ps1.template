@@ -35,6 +35,17 @@ function Test-Command($cmd) {
 function Check-Dependencies {
     if (Test-Command "openssl") { return }
     
+    # Check if Git for Windows openssl exists in standard location but isn't in PATH
+    $gitOpenSslPath = "C:\Program Files\Git\usr\bin\openssl.exe"
+    if (Test-Path $gitOpenSslPath) {
+        Write-Info "Found openssl from Git for Windows, adding to PATH..."
+        $env:Path = "$env:Path;C:\Program Files\Git\usr\bin"
+        if (Test-Command "openssl") {
+            Write-Success "openssl is now available"
+            return
+        }
+    }
+    
     Write-Warn "openssl not found (required for encryption)"
     
     if (Test-Command "winget") {
@@ -53,7 +64,7 @@ function Check-Dependencies {
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
         } elseif ($choice -eq "2") {
             Write-Info "Installing OpenSSL..."
-            winget install --id ShiningLight.OpenSSL -e --source winget
+            winget install --id ShiningLight.OpenSSL.Light -e --source winget
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
         }
     } else {
@@ -164,6 +175,7 @@ function Update-Byee {
         
         # LEGACY: Check for and offer to remove age (see comment above Offer-AgeRemoval)
         Offer-AgeRemoval
+    } catch {
         Write-Err "Failed to download update: $($_.Exception.Message)"
     }
     
