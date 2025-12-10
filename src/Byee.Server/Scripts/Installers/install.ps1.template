@@ -23,59 +23,7 @@ function Test-Command($cmd) {
     }
 }
 
-function Install-Age {
-    if (Test-Command "age") {
-        Write-Success "age already installed"
-        return
-    }
 
-    Write-Info "Installing age encryption tool..."
-    
-    # Try winget first
-    if (Test-Command "winget") {
-        try {
-            winget install --id FiloSottile.age -e --silent
-            if (Test-Command "age") {
-                Write-Success "age installed via winget"
-                return
-            }
-        } catch {}
-    }
-    
-    # Try scoop
-    if (Test-Command "scoop") {
-        try {
-            scoop install age
-            if (Test-Command "age") {
-                Write-Success "age installed via scoop"
-                return
-            }
-        } catch {}
-    }
-    
-    # Manual install from GitHub
-    Write-Info "Installing age from GitHub releases..."
-    
-    $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-    $version = "v1.1.1"
-    $url = "https://github.com/FiloSottile/age/releases/download/$version/age-$version-windows-$arch.zip"
-    
-    $tempDir = Join-Path $env:TEMP "byee-age-install"
-    $zipFile = Join-Path $tempDir "age.zip"
-    
-    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-    New-Item -ItemType Directory -Force -Path $BYEE_BIN_DIR | Out-Null
-    
-    Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing
-    Expand-Archive -Path $zipFile -DestinationPath $tempDir -Force
-    
-    Copy-Item -Path (Join-Path $tempDir "age\age.exe") -Destination $BYEE_BIN_DIR -Force
-    Copy-Item -Path (Join-Path $tempDir "age\age-keygen.exe") -Destination $BYEE_BIN_DIR -Force
-    
-    Remove-Item -Path $tempDir -Recurse -Force
-    
-    Write-Success "age installed to $BYEE_BIN_DIR"
-}
 
 function Install-ByeeClient {
     Write-Info "Downloading byee client..."
@@ -173,8 +121,6 @@ function Main {
         }
     }
     
-    # Install dependencies
-    Install-Age
     
     # Ask about folder support
     Request-FolderSupport

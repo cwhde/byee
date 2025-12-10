@@ -63,79 +63,6 @@ detect_pkg_manager() {
     fi
 }
 
-# Install age encryption tool
-install_age() {
-    if command -v age >/dev/null 2>&1; then
-        success "age already installed"
-        return 0
-    fi
-
-    info "Installing age encryption tool..."
-    
-    local pkg_manager=$(detect_pkg_manager)
-    local os=$(detect_os)
-    
-    case "$pkg_manager" in
-        apk)
-            sudo apk add --no-cache age || apk add --no-cache age
-            ;;
-        apt)
-            sudo apt-get update && sudo apt-get install -y age || {
-                # age might not be in older repos, install from GitHub
-                install_age_binary
-            }
-            ;;
-        dnf|yum)
-            sudo $pkg_manager install -y age || install_age_binary
-            ;;
-        pacman)
-            sudo pacman -Sy --noconfirm age
-            ;;
-        brew)
-            brew install age
-            ;;
-        *)
-            install_age_binary
-            ;;
-    esac
-    
-    command -v age >/dev/null 2>&1 || error "Failed to install age"
-    success "age installed"
-}
-
-# Install age from GitHub releases (fallback)
-install_age_binary() {
-    info "Installing age from GitHub releases..."
-    
-    local os=$(detect_os)
-    local arch=$(uname -m)
-    
-    case "$arch" in
-        x86_64|amd64) arch="amd64" ;;
-        aarch64|arm64) arch="arm64" ;;
-        armv7*) arch="arm" ;;
-        *) error "Unsupported architecture: $arch" ;;
-    esac
-    
-    case "$os" in
-        linux|alpine) os_name="linux" ;;
-        macos) os_name="darwin" ;;
-        *) error "Unsupported OS for binary install: $os" ;;
-    esac
-    
-    local tmp_dir=$(mktemp -d)
-    local age_version="v1.1.1"
-    local url="https://github.com/FiloSottile/age/releases/download/${age_version}/age-${age_version}-${os_name}-${arch}.tar.gz"
-    
-    curl -fsSL "$url" | tar -xz -C "$tmp_dir"
-    
-    mkdir -p "$BYEE_BIN_DIR"
-    mv "$tmp_dir/age/age" "$BYEE_BIN_DIR/"
-    mv "$tmp_dir/age/age-keygen" "$BYEE_BIN_DIR/"
-    chmod +x "$BYEE_BIN_DIR/age" "$BYEE_BIN_DIR/age-keygen"
-    
-    rm -rf "$tmp_dir"
-}
 
 # Install curl if not present
 install_curl() {
@@ -350,7 +277,6 @@ main() {
     
     # Install dependencies
     install_curl
-    install_age
     install_pv
     install_jq
     
