@@ -16,7 +16,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Scripts\**\*" />
+    <!-- Embedded script templates with explicit logical names for cross-platform compatibility -->
+    <EmbeddedResource Include="Scripts\Installers\install.sh.template" LogicalName="Byee.Server.Scripts.Installers.install.sh.template" />
+    <EmbeddedResource Include="Scripts\Installers\install.ps1.template" LogicalName="Byee.Server.Scripts.Installers.install.ps1.template" />
+    <EmbeddedResource Include="Scripts\Clients\byee.sh.template" LogicalName="Byee.Server.Scripts.Clients.byee.sh.template" />
+    <EmbeddedResource Include="Scripts\Clients\byee.ps1.template" LogicalName="Byee.Server.Scripts.Clients.byee.ps1.template" />
   </ItemGroup>
 
   <ItemGroup>

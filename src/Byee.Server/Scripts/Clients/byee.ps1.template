@@ -76,8 +76,9 @@ function Send-File($FilePath, $Encrypt = $true) {
 }
 
 function Send-FileEncrypted($FilePath, $filename, $filesize) {
-    # Generate age key pair
-    $tmpKeyFile = [System.IO.Path]::GetTempFileName()
+    # Generate age key pair - use a unique temp path that doesn't exist
+    # (GetTempFileName creates the file, but age-keygen wants to create it)
+    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([System.Guid]::NewGuid().ToString('N')).txt"
     
     try {
         $keygenOutput = & age-keygen -o $tmpKeyFile 2>&1
@@ -91,7 +92,8 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         Write-Info "Generated encryption key"
         Write-Info "Encrypting and uploading..."
         
-        $tempEncrypted = [System.IO.Path]::GetTempFileName()
+        # Use unique temp path (age -o needs to create the file itself)
+        $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([System.Guid]::NewGuid().ToString('N')).age"
         
         try {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()

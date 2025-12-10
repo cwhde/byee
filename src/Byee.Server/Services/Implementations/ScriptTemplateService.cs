@@ -25,10 +25,14 @@ public class ScriptTemplateService : IScriptTemplateService
     {
         var assembly = Assembly.GetExecutingAssembly();
         var resourceNames = assembly.GetManifestResourceNames();
+        
+        _logger.LogDebug("Found {Count} embedded resources: {Names}", 
+            resourceNames.Length, string.Join(", ", resourceNames));
 
         foreach (var resourceName in resourceNames)
         {
-            if (!resourceName.Contains(".Scripts."))
+            // Check for Scripts in resource name (case-insensitive for cross-platform)
+            if (!resourceName.Contains("Scripts", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             using var stream = assembly.GetManifestResourceStream(resourceName);
@@ -39,30 +43,42 @@ public class ScriptTemplateService : IScriptTemplateService
 
             // Parse resource name to determine type and platform
             // Format: Byee.Server.Scripts.Installers.install.sh.template
-            if (resourceName.Contains(".Installers."))
+            var isInstaller = resourceName.Contains("Installers", StringComparison.OrdinalIgnoreCase);
+            var isClient = resourceName.Contains("Clients", StringComparison.OrdinalIgnoreCase);
+            var isShell = resourceName.EndsWith(".sh.template", StringComparison.OrdinalIgnoreCase);
+            var isPowerShell = resourceName.EndsWith(".ps1.template", StringComparison.OrdinalIgnoreCase);
+            
+            _logger.LogDebug("Processing resource {Name}: installer={IsInstaller}, client={IsClient}, sh={IsSh}, ps1={IsPs1}",
+                resourceName, isInstaller, isClient, isShell, isPowerShell);
+
+            if (isInstaller)
             {
-                if (resourceName.EndsWith(".sh.template"))
+                if (isShell)
                 {
                     _templateCache[("installer", Platform.Linux)] = content;
                     _templateCache[("installer", Platform.MacOS)] = content;
                     _templateCache[("installer", Platform.Alpine)] = content;
+                    _logger.LogDebug("Loaded shell installer template for Linux/MacOS/Alpine");
                 }
-                else if (resourceName.EndsWith(".ps1.template"))
+                else if (isPowerShell)
                 {
                     _templateCache[("installer", Platform.Windows)] = content;
+                    _logger.LogDebug("Loaded PowerShell installer template for Windows");
                 }
             }
-            else if (resourceName.Contains(".Clients."))
+            else if (isClient)
             {
-                if (resourceName.EndsWith(".sh.template"))
+                if (isShell)
                 {
                     _templateCache[("client", Platform.Linux)] = content;
                     _templateCache[("client", Platform.MacOS)] = content;
                     _templateCache[("client", Platform.Alpine)] = content;
+                    _logger.LogDebug("Loaded shell client template for Linux/MacOS/Alpine");
                 }
-                else if (resourceName.EndsWith(".ps1.template"))
+                else if (isPowerShell)
                 {
                     _templateCache[("client", Platform.Windows)] = content;
+                    _logger.LogDebug("Loaded PowerShell client template for Windows");
                 }
             }
         }
