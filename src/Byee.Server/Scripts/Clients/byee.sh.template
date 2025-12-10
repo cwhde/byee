@@ -38,11 +38,16 @@ error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; exit 1; }
 # Format bytes to human readable
 format_size() {
     bytes=$1
-    if [ "$bytes" -ge 1073741824 ]; then
+    # Handle empty or non-numeric input
+    if [ -z "$bytes" ] || ! expr "$bytes" + 0 >/dev/null 2>&1; then
+        printf "unknown size"
+        return
+    fi
+    if [ "$bytes" -ge 1073741824 ] 2>/dev/null; then
         awk "BEGIN {printf \"%.2f GB\", $bytes / 1073741824}"
-    elif [ "$bytes" -ge 1048576 ]; then
+    elif [ "$bytes" -ge 1048576 ] 2>/dev/null; then
         awk "BEGIN {printf \"%.2f MB\", $bytes / 1048576}"
-    elif [ "$bytes" -ge 1024 ]; then
+    elif [ "$bytes" -ge 1024 ] 2>/dev/null; then
         awk "BEGIN {printf \"%.2f KB\", $bytes / 1024}"
     else
         printf "%d B" "$bytes"
@@ -134,6 +139,24 @@ send_file() {
     fi
 }
 
+# Get folder size in bytes (cross-platform)
+get_folder_size() {
+    folder="$1"
+    # Try GNU du first (Linux)
+    size=$(du -sb "$folder" 2>/dev/null | cut -f1)
+    if [ -n "$size" ]; then
+        echo "$size"
+        return
+    fi
+    # macOS/BSD: du -sk gives kilobytes
+    size=$(du -sk "$folder" 2>/dev/null | cut -f1)
+    if [ -n "$size" ]; then
+        echo $((size * 1024))
+        return
+    fi
+    echo "0"
+}
+
 # Send a folder (zip and upload)
 send_folder() {
     folder="$1"
@@ -141,7 +164,7 @@ send_folder() {
     
     foldername=$(basename "$folder")
     # Get folder size
-    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    foldersize=$(get_folder_size "$folder")
     foldersize_human=$(format_size "$foldersize")
     
     printf "${BLUE}[INFO]${NC} Preparing to send folder: ${BOLD}%s${NC} (%s)\n" "$foldername" "$foldersize_human"
@@ -177,7 +200,7 @@ send_folder_encrypted() {
     info "Generated encryption key"
     
     # Get original folder size for header
-    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    foldersize=$(get_folder_size "$folder")
     
     # Pipe: zip -> age -> curl (no temp files)
     cd "$(dirname "$folder")"
@@ -222,7 +245,7 @@ send_folder_raw() {
     server_url=$(get_server_url)
     
     # Get original folder size for header
-    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    foldersize=$(get_folder_size "$folder")
     
     # Pipe: zip -> curl (no temp files)
     cd "$(dirname "$folder")"
