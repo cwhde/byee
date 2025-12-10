@@ -5,7 +5,7 @@
 #   byee .\file.zip                     Send a file (encrypted by default)
 #   byee .\myFolder                     Send a folder (if folder support enabled)
 #   byee --no-encrypt .\file.zip        Send without encryption
-#   byee receive <id> [key]             Receive a file
+#   byee receive <id> <key>             Receive a file
 #   byee --server <url> .\file.zip      Use different server temporarily
 #   byee --update                       Update byee client
 #   byee --uninstall                    Uninstall byee
@@ -31,6 +31,9 @@ $BYEE_VERSION = "{{BYEE_VERSION}}"
 $BYEE_FOLDERS_ENABLED = $false
 $script:ServerOverride = ""
 
+# Wordlist for passphrase generation (4096 words from EFF wordlist)
+$BYEE_WORDLIST = "{{BYEE_WORDLIST}}" -split ","
+
 function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
@@ -43,13 +46,15 @@ function Format-FileSize($bytes) {
     else { return "$bytes B" }
 }
 
-function Get-ShortKey($key) {
-    return $key -replace "^AGE-SECRET-KEY-", ""
-}
-
-function Get-FullKey($key) {
-    if ($key -match "^AGE-SECRET-KEY-") { return $key }
-    return "AGE-SECRET-KEY-$key"
+function New-Passphrase {
+    param([int]$WordCount = 4)
+    
+    $words = @()
+    for ($i = 0; $i -lt $WordCount; $i++) {
+        $index = Get-Random -Maximum $BYEE_WORDLIST.Length
+        $words += $BYEE_WORDLIST[$index]
+    }
+    return $words -join "-"
 }
 
 function Get-ServerUrl {
@@ -60,11 +65,9 @@ function Get-ServerUrl {
 }
 
 function Test-EncryptionDeps {
-    $deps = @("age", "age-keygen")
-    foreach ($dep in $deps) {
-        if (-not (Get-Command $dep -ErrorAction SilentlyContinue)) {
-            Write-Err "$dep is required for encryption. Run the installer: irm $BYEE_URL | iex"
-        }
+    # OpenSSL should be available via Git for Windows or standalone install
+    if (-not (Get-Command "openssl" -ErrorAction SilentlyContinue)) {
+        Write-Err "openssl is required for encryption but not found. Install Git for Windows or OpenSSL."
     }
 }
 
@@ -115,24 +118,12 @@ function Send-Folder($FolderPath, $Encrypt = $true) {
 
 function Send-FolderEncrypted($FolderPath, $foldername) {
     $serverUrl = Get-ServerUrl
-    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
     $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) "byee-zip-$([guid]::NewGuid().ToString('N')).zip"
-    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).age"
+    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).enc"
     
     try {
-        # Generate age key pair
-        $ErrorActionPreference = "SilentlyContinue"
-        & age-keygen -o $tmpKeyFile 2>$null
-        $ErrorActionPreference = "Stop"
-        
-        $keyContent = Get-Content $tmpKeyFile -Raw
-        $pubkeyMatch = $keyContent | Select-String "# public key: (.+)"
-        if (-not $pubkeyMatch) {
-            Write-Err "Failed to get public key from age-keygen output"
-        }
-        $pubkey = $pubkeyMatch.Matches[0].Groups[1].Value.Trim()
-        $secretKey = ($keyContent | Select-String "(AGE-SECRET-KEY-\S+)").Matches[0].Groups[1].Value
-        $shortKey = Get-ShortKey $secretKey
+        # Generate passphrase (4 words)
+        $passphrase = New-Passphrase -WordCount 4
         
         Write-Info "Generated encryption key"
         Write-Info "Zipping, encrypting and uploading..."
@@ -143,8 +134,8 @@ function Send-FolderEncrypted($FolderPath, $foldername) {
         # Get original folder size
         $foldersize = (Get-ChildItem $FolderPath -Recurse | Measure-Object -Property Length -Sum).Sum
         
-        # Encrypt zip
-        & age -r $pubkey -o $tempEncrypted $tempZip
+        # Encrypt zip with openssl
+        & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -in $tempZip -out $tempEncrypted -pass "pass:$passphrase"
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Encryption failed"
         }
@@ -176,12 +167,11 @@ function Send-FolderEncrypted($FolderPath, $foldername) {
         Write-Host ""
         Write-Host "Share this command with the recipient:" -ForegroundColor White
         Write-Host ""
-        Write-Host "  byee receive $fileId $shortKey" -ForegroundColor Cyan
+        Write-Host "  byee receive $fileId $passphrase" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
         
     } finally {
-        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tempZip) { Remove-Item $tempZip -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
     }
@@ -238,29 +228,17 @@ function Send-FolderRaw($FolderPath, $foldername) {
 
 function Send-FileEncrypted($FilePath, $filename, $filesize) {
     $serverUrl = Get-ServerUrl
-    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
-    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).age"
+    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).enc"
     
     try {
-        # Generate age key pair
-        $ErrorActionPreference = "SilentlyContinue"
-        & age-keygen -o $tmpKeyFile 2>$null
-        $ErrorActionPreference = "Stop"
-        
-        $keyContent = Get-Content $tmpKeyFile -Raw
-        $pubkeyMatch = $keyContent | Select-String "# public key: (.+)"
-        if (-not $pubkeyMatch) {
-            Write-Err "Failed to get public key from age-keygen output"
-        }
-        $pubkey = $pubkeyMatch.Matches[0].Groups[1].Value.Trim()
-        $secretKey = ($keyContent | Select-String "(AGE-SECRET-KEY-\S+)").Matches[0].Groups[1].Value
-        $shortKey = Get-ShortKey $secretKey
+        # Generate passphrase (4 words)
+        $passphrase = New-Passphrase -WordCount 4
         
         Write-Info "Generated encryption key"
         Write-Info "Encrypting and uploading..."
         
-        # Encrypt file
-        & age -r $pubkey -o $tempEncrypted $FilePath
+        # Encrypt file with openssl
+        & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -in $FilePath -out $tempEncrypted -pass "pass:$passphrase"
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Encryption failed"
         }
@@ -291,12 +269,11 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         Write-Host ""
         Write-Host "Share this command with the recipient:" -ForegroundColor White
         Write-Host ""
-        Write-Host "  byee receive $fileId $shortKey" -ForegroundColor Cyan
+        Write-Host "  byee receive $fileId $passphrase" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
         
     } finally {
-        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -406,14 +383,9 @@ function Receive-File($FileId, $SecretKey) {
         Test-EncryptionDeps
         Write-Info "Downloading and decrypting..."
         
-        $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-dl-$([guid]::NewGuid().ToString('N')).age"
-        $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
+        $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-dl-$([guid]::NewGuid().ToString('N')).enc"
         
         try {
-            # Expand key and save to temp file
-            $fullKey = Get-FullKey $SecretKey
-            $fullKey | Set-Content $tmpKeyFile -NoNewline
-            
             # Download encrypted file
             $headers = @{ "X-Byee-Claim-Token" = $claimToken }
             try {
@@ -422,15 +394,14 @@ function Receive-File($FileId, $SecretKey) {
                 Write-Err "Download failed: $($_.Exception.Message)"
             }
             
-            # Decrypt
-            & age -d -i $tmpKeyFile -o $outputFile $tempEncrypted
+            # Decrypt with openssl
+            & openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -in $tempEncrypted -out $outputFile -pass "pass:$SecretKey"
             if ($LASTEXITCODE -ne 0) {
-                Write-Err "Decryption failed"
+                Write-Err "Decryption failed - wrong key?"
             }
             
         } finally {
             if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
-            if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
         }
     } else {
         Write-Info "Downloading..."

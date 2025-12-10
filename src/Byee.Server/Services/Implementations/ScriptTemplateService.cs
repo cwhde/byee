@@ -187,10 +187,29 @@ public class ScriptTemplateService : IScriptTemplateService
     private string ProcessTemplate(string template)
     {
         var publicUrl = _options.PublicUrl.TrimEnd('/');
+        var wordList = GetWordListForClient();
         
         return template
             .Replace("{{BYEE_URL}}", publicUrl)
-            .Replace("{{BYEE_VERSION}}", GetVersion());
+            .Replace("{{BYEE_VERSION}}", GetVersion())
+            .Replace("{{BYEE_WORDLIST}}", wordList);
+    }
+
+    private static string GetWordListForClient()
+    {
+        // Load wordlist and return as comma-separated string for shell scripts
+        var wordListPath = Path.Combine(AppContext.BaseDirectory, "wordlist.txt");
+        if (File.Exists(wordListPath))
+        {
+            var words = File.ReadAllLines(wordListPath)
+                .Where(w => !string.IsNullOrWhiteSpace(w))
+                .Select(w => w.Trim().ToLowerInvariant())
+                .Distinct();
+            return string.Join(",", words);
+        }
+        
+        // Fallback minimal list
+        return "apple,banana,cherry,dragon,eagle,falcon,garden,harbor,island,jungle,koala,lemon,mango,north,ocean,panda,queen,river,storm,tiger,violet,water,yellow,zebra,anchor,bridge,castle,desert,forest,meadow,phoenix,rocket";
     }
 
     private static string GetVersion()
