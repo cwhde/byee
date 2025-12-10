@@ -74,8 +74,8 @@ public static class PlatformExtensions
     {
         return platform switch
         {
-            Platform.Windows => "application/x-powershell",
-            _ => "application/x-sh"
+            Platform.Windows => "text/plain",
+            _ => "text/plain"
         };
     }
 

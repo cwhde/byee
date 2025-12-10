@@ -495,12 +495,15 @@ function Receive-File($FileId, $SecretKey) {
 
 function Invoke-Update {
     Write-Info "Fetching update script..."
-    Invoke-Expression (Invoke-WebRequest -Uri "$BYEE_URL/update/windows" -UseBasicParsing).Content
+    $resp = Invoke-WebRequest -Uri "$BYEE_URL/update/windows" -UseBasicParsing
+    $content = if ($resp.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($resp.Content) } else { $resp.Content }
+    Invoke-Expression $content
 }
 
 function Invoke-Uninstall($Args) {
     Write-Info "Fetching uninstall script..."
-    $script = (Invoke-WebRequest -Uri "$BYEE_URL/uninstall/windows" -UseBasicParsing).Content
+    $resp = Invoke-WebRequest -Uri "$BYEE_URL/uninstall/windows" -UseBasicParsing
+    $script = if ($resp.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($resp.Content) } else { $resp.Content }
     if ($Args) {
         Invoke-Expression "$script -Mode $Args"
     } else {
@@ -515,7 +518,9 @@ function Enable-Folders {
     }
     
     Write-Info "Fetching enable-folders script..."
-    Invoke-Expression (Invoke-WebRequest -Uri "$BYEE_URL/enable-folders/windows" -UseBasicParsing).Content
+    $resp = Invoke-WebRequest -Uri "$BYEE_URL/enable-folders/windows" -UseBasicParsing
+    $content = if ($resp.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($resp.Content) } else { $resp.Content }
+    Invoke-Expression $content
 }
 
 function Show-Usage {
