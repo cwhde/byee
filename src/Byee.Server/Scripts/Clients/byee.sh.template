@@ -86,11 +86,11 @@ send_file() {
     filesize_human=$(format_size "$filesize")
     
     if [ "$encrypt" = "true" ]; then
-        info "Preparing to send (encrypted): ${BOLD}$filename${NC} ($filesize_human)"
+        printf "${BLUE}[INFO]${NC} Preparing to send (encrypted): ${BOLD}%s${NC} (%s)\n" "$filename" "$filesize_human"
         check_deps_encryption
         send_file_encrypted "$file" "$filename" "$filesize"
     else
-        info "Preparing to send (unencrypted): ${BOLD}$filename${NC} ($filesize_human)"
+        printf "${BLUE}[INFO]${NC} Preparing to send (unencrypted): ${BOLD}%s${NC} (%s)\n" "$filename" "$filesize_human"
         send_file_raw "$file" "$filename" "$filesize"
     fi
 }
@@ -103,8 +103,8 @@ send_file_encrypted() {
     
     # Generate age key pair
     tmp_key=$(mktemp)
-    age-keygen -o "$tmp_key" 2>/dev/null
-    pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
+    keygen_output=$(age-keygen -o "$tmp_key" 2>&1)
+    pubkey=$(echo "$keygen_output" | grep "Public key:" | sed 's/.*Public key: //')
     secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
     short_key=$(shorten_key "$secret_key")
     
