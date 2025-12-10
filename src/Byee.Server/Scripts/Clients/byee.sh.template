@@ -479,7 +479,7 @@ receive_file() {
         # If we have the key, we can show the real name
         if [ -n "$secret_key" ]; then
              # Decrypt filename
-             real_filename=$(echo "$filename" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$secret_key" -a -A 2>/dev/null)
+             real_filename=$(echo -n "$filename" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$secret_key" -a -A 2>/dev/null)
              if [ -n "$real_filename" ]; then
                  printf "${CYAN} Real Name: ${BOLD}%s${NC}\n" "$real_filename"
                  filename="$real_filename"

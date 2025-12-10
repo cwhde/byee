@@ -252,9 +252,20 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         
         if ($script:EncryptFilename) {
             Write-Info "Encrypting filename..."
-            # Encrypt filename with openssl
-            $filenameEnc = $filename | & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A
-            $filename = $filenameEnc
+            # Encrypt filename with openssl - use temp file approach to avoid pipeline encoding issues
+            $tempIn = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).txt"
+            $tempOut = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).b64"
+            try {
+                [System.IO.File]::WriteAllText($tempIn, $filename)
+                & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A -in $tempIn -out $tempOut
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Err "Filename encryption failed"
+                }
+                $filename = [System.IO.File]::ReadAllText($tempOut)
+            } finally {
+                if (Test-Path $tempIn) { Remove-Item $tempIn -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
+            }
         }
 
         Write-Info "Encrypting and uploading..."
@@ -378,13 +389,26 @@ function Receive-File($FileId, $SecretKey) {
         Write-Host " Filename: Hidden (Encrypted)" -ForegroundColor Yellow
         
         if ($SecretKey) {
-            # Decrypt filename
-            $realFilename = $filename | & openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$SecretKey" -a -A 2>&1
-            if ($LASTEXITCODE -eq 0 -and $realFilename) {
-                Write-Host " Real Name: $realFilename" -ForegroundColor Cyan
-                $filename = $realFilename
-            } else {
-                Write-Warn "Failed to decrypt filename with provided key"
+            # Decrypt filename - use temp file approach to avoid pipeline encoding issues
+            $tempIn = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).b64"
+            $tempOut = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).txt"
+            try {
+                [System.IO.File]::WriteAllText($tempIn, $filename)
+                & openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$SecretKey" -a -A -in $tempIn -out $tempOut 2>$null
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $tempOut)) {
+                    $realFilename = [System.IO.File]::ReadAllText($tempOut)
+                    if ($realFilename) {
+                        Write-Host " Real Name: $realFilename" -ForegroundColor Cyan
+                        $filename = $realFilename
+                    } else {
+                        Write-Warn "Failed to decrypt filename with provided key"
+                    }
+                } else {
+                    Write-Warn "Failed to decrypt filename with provided key"
+                }
+            } finally {
+                if (Test-Path $tempIn) { Remove-Item $tempIn -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
             }
         }
     } else {
