@@ -136,6 +136,29 @@ install_jq() {
     success "jq installed"
 }
 
+# Install openssl for encryption
+install_openssl() {
+    if command -v openssl >/dev/null 2>&1; then
+        success "openssl already installed"
+        return 0
+    fi
+    
+    info "Installing openssl..."
+    
+    local pkg_manager=$(detect_pkg_manager)
+    
+    case "$pkg_manager" in
+        apk) sudo apk add --no-cache openssl || apk add --no-cache openssl ;;
+        apt) sudo apt-get update && sudo apt-get install -y openssl ;;
+        dnf|yum) sudo $pkg_manager install -y openssl ;;
+        pacman) sudo pacman -Sy --noconfirm openssl ;;
+        brew) brew install openssl ;;
+        *) error "Cannot install openssl. Please install it manually." ;;
+    esac
+    
+    success "openssl installed"
+}
+
 # Install zip tools for folder support
 install_zip_tools() {
     if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
@@ -279,6 +302,7 @@ main() {
     install_curl
     install_pv
     install_jq
+    install_openssl
     
     # Ask about folder support
     ask_folder_support
