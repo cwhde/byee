@@ -1,0 +1,194 @@
+# Byee Uninstall Script for Windows - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+
+param(
+    [Parameter(Position=0)]
+    [string]$Mode,
+    
+    [Parameter()]
+    [string]$Deps
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$BYEE_URL = "{{BYEE_URL}}"
+$BYEE_BIN_DIR = "$env:LOCALAPPDATA\byee\bin"
+$BYEE_DATA_DIR = "$env:LOCALAPPDATA\byee\data"
+
+function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+
+function Test-Command($cmd) {
+    try {
+        Get-Command $cmd -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Remove-ByeeClient {
+    Write-Info "Removing byee client..."
+    
+    $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    $batchPath = Join-Path $BYEE_BIN_DIR "byee.cmd"
+    
+    if (Test-Path $clientPath) {
+        Remove-Item $clientPath -Force
+        Write-Success "Removed byee.ps1"
+    }
+    
+    if (Test-Path $batchPath) {
+        Remove-Item $batchPath -Force
+        Write-Success "Removed byee.cmd"
+    }
+    
+    if (Test-Path $BYEE_DATA_DIR) {
+        Remove-Item $BYEE_DATA_DIR -Recurse -Force
+        Write-Success "Removed byee data directory"
+    }
+}
+
+function Remove-Age {
+    Write-Info "Removing age..."
+    
+    # Check if age is in byee bin dir (manual install)
+    $ageInBin = Join-Path $BYEE_BIN_DIR "age.exe"
+    $ageKeygenInBin = Join-Path $BYEE_BIN_DIR "age-keygen.exe"
+    
+    if (Test-Path $ageInBin) {
+        Remove-Item $ageInBin -Force -ErrorAction SilentlyContinue
+        Remove-Item $ageKeygenInBin -Force -ErrorAction SilentlyContinue
+        Write-Success "Removed age from $BYEE_BIN_DIR"
+        return
+    }
+    
+    # Try winget
+    if (Test-Command "winget") {
+        try {
+            winget uninstall --id FiloSottile.age -e --silent 2>$null
+            Write-Success "Removed age via winget"
+            return
+        } catch {}
+    }
+    
+    # Try scoop
+    if (Test-Command "scoop") {
+        try {
+            scoop uninstall age 2>$null
+            Write-Success "Removed age via scoop"
+            return
+        } catch {}
+    }
+    
+    Write-Warn "Could not find age to remove"
+}
+
+function Remove-ZipTools {
+    Write-Info "Note: Windows has built-in zip support, no tools to remove"
+}
+
+function Remove-FromPath {
+    Write-Info "Removing byee from PATH..."
+    
+    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    
+    if ($currentPath -like "*$BYEE_BIN_DIR*") {
+        $newPath = ($currentPath -split ';' | Where-Object { $_ -ne $BYEE_BIN_DIR }) -join ';'
+        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+        Write-Success "Removed from PATH"
+    } else {
+        Write-Info "PATH does not contain byee directory"
+    }
+}
+
+function Start-InteractiveUninstall {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "     Byee Uninstaller" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Write-Host "What would you like to uninstall?"
+    Write-Host ""
+    Write-Host "  1) Byee client only"
+    Write-Host "  2) Byee client + age (encryption)"
+    Write-Host "  3) Byee client + all + remove from PATH"
+    Write-Host "  4) Custom (choose what to remove)"
+    Write-Host "  5) Cancel"
+    Write-Host ""
+    
+    $choice = Read-Host "Choice [1-5]"
+    
+    switch ($choice) {
+        "1" {
+            Remove-ByeeClient
+        }
+        "2" {
+            Remove-ByeeClient
+            Remove-Age
+        }
+        "3" {
+            Remove-ByeeClient
+            Remove-Age
+            Remove-FromPath
+        }
+        "4" {
+            Remove-ByeeClient
+            
+            $removeAge = Read-Host "Remove age (encryption tool)? [y/N]"
+            if ($removeAge -eq "y" -or $removeAge -eq "Y") { Remove-Age }
+            
+            $removePath = Read-Host "Remove byee from PATH? [y/N]"
+            if ($removePath -eq "y" -or $removePath -eq "Y") { Remove-FromPath }
+        }
+        "5" {
+            Write-Info "Uninstall cancelled"
+            exit 0
+        }
+        default {
+            Write-Err "Invalid choice"
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host " Uninstall Complete!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+}
+
+function Start-AutoUninstall {
+    if ($Mode -eq "all") {
+        Write-Info "Uninstalling byee and all dependencies..."
+        Remove-ByeeClient
+        Remove-Age
+        Remove-FromPath
+    } elseif ($Deps) {
+        Remove-ByeeClient
+        
+        $depList = $Deps -split ','
+        foreach ($dep in $depList) {
+            switch ($dep.Trim()) {
+                "age" { Remove-Age }
+                "path" { Remove-FromPath }
+                default { Write-Warn "Unknown dependency: $dep" }
+            }
+        }
+    } else {
+        Remove-ByeeClient
+    }
+    
+    Write-Host ""
+    Write-Success "Uninstall complete!"
+}
+
+# Main
+if ($Mode -eq "all" -or $Deps) {
+    Start-AutoUninstall
+} else {
+    Start-InteractiveUninstall
+}

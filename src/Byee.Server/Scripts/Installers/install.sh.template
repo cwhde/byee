@@ -6,6 +6,7 @@ set -e
 BYEE_URL="{{BYEE_URL}}"
 BYEE_BIN_DIR="${HOME}/.local/bin"
 BYEE_DATA_DIR="${HOME}/.local/share/byee"
+INSTALL_FOLDERS="false"
 
 # Colors (if terminal supports it)
 if [ -t 1 ]; then
@@ -208,6 +209,68 @@ install_jq() {
     success "jq installed"
 }
 
+# Install zip tools for folder support
+install_zip_tools() {
+    if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+        success "zip and unzip already installed"
+        return 0
+    fi
+    
+    info "Installing zip tools for folder support..."
+    
+    local pkg_manager=$(detect_pkg_manager)
+    
+    case "$pkg_manager" in
+        apk) sudo apk add --no-cache zip unzip || apk add --no-cache zip unzip ;;
+        apt) sudo apt-get update && sudo apt-get install -y zip unzip ;;
+        dnf|yum) sudo $pkg_manager install -y zip unzip ;;
+        pacman) sudo pacman -Sy --noconfirm zip unzip ;;
+        brew) 
+            # macOS has built-in zip/unzip
+            success "macOS has built-in zip support"
+            return 0
+            ;;
+        *) 
+            warn "Cannot install zip tools. Folder support will be limited."
+            return 1
+            ;;
+    esac
+    
+    success "zip tools installed"
+}
+
+# Ask about folder support
+ask_folder_support() {
+    # Skip if not interactive
+    if [ ! -t 0 ]; then
+        return 0
+    fi
+    
+    printf "\n"
+    printf "${YELLOW}Would you like to enable folder support?${NC}\n"
+    printf "This allows sending entire folders (they'll be zipped automatically).\n"
+    printf "Requires: zip/unzip tools, uses additional disk space during transfers.\n"
+    printf "\n"
+    printf "Enable folder support? [y/N]: "
+    read enable_folders
+    
+    if [ "$enable_folders" = "y" ] || [ "$enable_folders" = "Y" ]; then
+        INSTALL_FOLDERS="true"
+    fi
+}
+
+# Enable folder support in client config
+enable_folders_in_client() {
+    if [ "$INSTALL_FOLDERS" = "true" ]; then
+        info "Enabling folder support in client..."
+        # Use sed to enable folders (handle both GNU and BSD sed)
+        sed -i.bak 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || \
+        sed -i '' 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || true
+        rm -f "$BYEE_BIN_DIR/byee.bak"
+        success "Folder support enabled"
+    fi
+}
+
 # Download and install byee client
 install_byee_client() {
     info "Downloading byee client..."
@@ -284,8 +347,19 @@ main() {
     install_pv
     install_jq
     
+    # Ask about folder support
+    ask_folder_support
+    
+    # Install folder support if requested
+    if [ "$INSTALL_FOLDERS" = "true" ]; then
+        install_zip_tools
+    fi
+    
     # Install client
     install_byee_client
+    
+    # Enable folder support if requested
+    enable_folders_in_client
     
     # Setup PATH
     setup_path
@@ -298,6 +372,12 @@ main() {
     printf "Usage:\n"
     printf "  ${YELLOW}byee ./file.zip${NC}           Send a file\n"
     printf "  ${YELLOW}byee receive <id> <key>${NC}  Receive a file\n"
+    if [ "$INSTALL_FOLDERS" = "true" ]; then
+        printf "  ${YELLOW}byee ./myFolder${NC}           Send a folder\n"
+    else
+        printf "\n"
+        printf "Tip: Run ${YELLOW}byee --enable-folders${NC} to add folder support later.\n"
+    fi
     printf "\n"
 }
 

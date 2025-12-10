@@ -15,4 +15,7 @@ public class FileInfoResponse
 
     [JsonPropertyName("claim_token")]
     public string ClaimToken { get; set; } = string.Empty;
+
+    [JsonPropertyName("is_folder")]
+    public bool IsFolder { get; set; }
 }

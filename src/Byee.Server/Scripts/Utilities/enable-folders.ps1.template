@@ -1,0 +1,81 @@
+# Byee Enable Folders Script for Windows - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$BYEE_URL = "{{BYEE_URL}}"
+$BYEE_BIN_DIR = "$env:LOCALAPPDATA\byee\bin"
+
+function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+
+function Test-FoldersEnabled {
+    $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    
+    if (Test-Path $clientPath) {
+        $content = Get-Content $clientPath -Raw
+        return $content -match '\$BYEE_FOLDERS_ENABLED\s*=\s*\$true'
+    }
+    return $false
+}
+
+function Install-ZipTools {
+    # Windows has built-in zip support via Compress-Archive and Expand-Archive
+    # No additional tools needed!
+    Write-Success "Windows has built-in zip support (Compress-Archive/Expand-Archive)"
+}
+
+function Enable-FoldersInClient {
+    $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    
+    if (-not (Test-Path $clientPath)) {
+        Write-Err "Byee is not installed. Run the installer first: irm $BYEE_URL | iex"
+    }
+    
+    Write-Info "Enabling folder support in byee client..."
+    
+    $content = Get-Content $clientPath -Raw
+    
+    if ($content -match '\$BYEE_FOLDERS_ENABLED\s*=') {
+        $content = $content -replace '\$BYEE_FOLDERS_ENABLED\s*=\s*\$false', '$BYEE_FOLDERS_ENABLED = $true'
+        Set-Content -Path $clientPath -Value $content -Force
+        Write-Success "Folder support enabled in client"
+    } else {
+        Write-Warn "Client does not have folder support variable. Please update your client first."
+        Write-Info "Run: byee --update"
+    }
+}
+
+function Main {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "     Byee - Enable Folder Support" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    if (Test-FoldersEnabled) {
+        Write-Success "Folder support is already enabled!"
+        Write-Host ""
+        Write-Host "You can now use:"
+        Write-Host "  byee .\myFolder    Send a folder" -ForegroundColor Yellow
+        Write-Host ""
+        exit 0
+    }
+    
+    Install-ZipTools
+    Enable-FoldersInClient
+    
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host " Folder Support Enabled!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "You can now use:"
+    Write-Host "  byee .\myFolder    Send a folder (will be zipped automatically)" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+Main

@@ -45,11 +45,12 @@ public class ScriptTemplateService : IScriptTemplateService
             // Format: Byee.Server.Scripts.Installers.install.sh.template
             var isInstaller = resourceName.Contains("Installers", StringComparison.OrdinalIgnoreCase);
             var isClient = resourceName.Contains("Clients", StringComparison.OrdinalIgnoreCase);
+            var isUtility = resourceName.Contains("Utilities", StringComparison.OrdinalIgnoreCase);
             var isShell = resourceName.EndsWith(".sh.template", StringComparison.OrdinalIgnoreCase);
             var isPowerShell = resourceName.EndsWith(".ps1.template", StringComparison.OrdinalIgnoreCase);
             
-            _logger.LogDebug("Processing resource {Name}: installer={IsInstaller}, client={IsClient}, sh={IsSh}, ps1={IsPs1}",
-                resourceName, isInstaller, isClient, isShell, isPowerShell);
+            _logger.LogDebug("Processing resource {Name}: installer={IsInstaller}, client={IsClient}, utility={IsUtility}, sh={IsSh}, ps1={IsPs1}",
+                resourceName, isInstaller, isClient, isUtility, isShell, isPowerShell);
 
             if (isInstaller)
             {
@@ -81,6 +82,33 @@ public class ScriptTemplateService : IScriptTemplateService
                     _logger.LogDebug("Loaded PowerShell client template for Windows");
                 }
             }
+            else if (isUtility)
+            {
+                // Determine which utility script this is
+                var scriptType = resourceName.ToLowerInvariant() switch
+                {
+                    var n when n.Contains("update") => "update",
+                    var n when n.Contains("uninstall") => "uninstall",
+                    var n when n.Contains("enable-folders") => "enable-folders",
+                    _ => null
+                };
+
+                if (scriptType != null)
+                {
+                    if (isShell)
+                    {
+                        _templateCache[(scriptType, Platform.Linux)] = content;
+                        _templateCache[(scriptType, Platform.MacOS)] = content;
+                        _templateCache[(scriptType, Platform.Alpine)] = content;
+                        _logger.LogDebug("Loaded shell {ScriptType} template for Linux/MacOS/Alpine", scriptType);
+                    }
+                    else if (isPowerShell)
+                    {
+                        _templateCache[(scriptType, Platform.Windows)] = content;
+                        _logger.LogDebug("Loaded PowerShell {ScriptType} template for Windows", scriptType);
+                    }
+                }
+            }
         }
 
         _logger.LogInformation("Loaded {Count} script templates", _templateCache.Count);
@@ -109,6 +137,48 @@ public class ScriptTemplateService : IScriptTemplateService
         {
             _logger.LogWarning("No client template found for platform {Platform}", platform);
             throw new InvalidOperationException($"No client template for platform {platform}");
+        }
+
+        return ProcessTemplate(template);
+    }
+
+    public string GetUpdateScript(Platform platform)
+    {
+        if (platform == Platform.Unknown)
+            platform = Platform.Linux;
+
+        if (!_templateCache.TryGetValue(("update", platform), out var template))
+        {
+            _logger.LogWarning("No update script template found for platform {Platform}", platform);
+            throw new InvalidOperationException($"No update script template for platform {platform}");
+        }
+
+        return ProcessTemplate(template);
+    }
+
+    public string GetUninstallScript(Platform platform)
+    {
+        if (platform == Platform.Unknown)
+            platform = Platform.Linux;
+
+        if (!_templateCache.TryGetValue(("uninstall", platform), out var template))
+        {
+            _logger.LogWarning("No uninstall script template found for platform {Platform}", platform);
+            throw new InvalidOperationException($"No uninstall script template for platform {platform}");
+        }
+
+        return ProcessTemplate(template);
+    }
+
+    public string GetEnableFoldersScript(Platform platform)
+    {
+        if (platform == Platform.Unknown)
+            platform = Platform.Linux;
+
+        if (!_templateCache.TryGetValue(("enable-folders", platform), out var template))
+        {
+            _logger.LogWarning("No enable-folders script template found for platform {Platform}", platform);
+            throw new InvalidOperationException($"No enable-folders script template for platform {platform}");
         }
 
         return ProcessTemplate(template);

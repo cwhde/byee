@@ -16,4 +16,19 @@ public interface IScriptTemplateService
     /// Get client script for the specified platform
     /// </summary>
     string GetClient(Platform platform);
+
+    /// <summary>
+    /// Get update script for the specified platform
+    /// </summary>
+    string GetUpdateScript(Platform platform);
+
+    /// <summary>
+    /// Get uninstall script for the specified platform
+    /// </summary>
+    string GetUninstallScript(Platform platform);
+
+    /// <summary>
+    /// Get enable-folders script for the specified platform
+    /// </summary>
+    string GetEnableFoldersScript(Platform platform);
 }

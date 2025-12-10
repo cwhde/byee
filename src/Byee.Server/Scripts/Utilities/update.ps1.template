@@ -1,0 +1,61 @@
+# Byee Update Script for Windows - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$BYEE_URL = "{{BYEE_URL}}"
+$BYEE_BIN_DIR = "$env:LOCALAPPDATA\byee\bin"
+
+function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+
+function Update-Byee {
+    Write-Info "Checking for updates..."
+    
+    $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+    
+    if (-not (Test-Path $clientPath)) {
+        Write-Err "Byee is not installed. Run the installer first: irm $BYEE_URL | iex"
+    }
+    
+    # Get current version
+    $currentContent = Get-Content $clientPath -Raw
+    $currentVersion = if ($currentContent -match '\$BYEE_VERSION\s*=\s*"([^"]+)"') { $Matches[1] } else { "unknown" }
+    Write-Info "Current version: $currentVersion"
+    
+    # Check if folder support was enabled
+    $hasFolders = $currentContent -match '\$BYEE_FOLDERS_ENABLED\s*=\s*\$true'
+    
+    # Download new client
+    Write-Info "Downloading latest byee client..."
+    
+    try {
+        $tempFile = Join-Path $env:TEMP "byee-update-$([guid]::NewGuid().ToString('N')).ps1"
+        Invoke-WebRequest -Uri "$BYEE_URL/client/windows" -OutFile $tempFile -UseBasicParsing
+        
+        $newContent = Get-Content $tempFile -Raw
+        $newVersion = if ($newContent -match '\$BYEE_VERSION\s*=\s*"([^"]+)"') { $Matches[1] } else { "unknown" }
+        
+        # Restore folder support if it was enabled
+        if ($hasFolders) {
+            $newContent = $newContent -replace '\$BYEE_FOLDERS_ENABLED\s*=\s*\$false', '$BYEE_FOLDERS_ENABLED = $true'
+        }
+        
+        Set-Content -Path $clientPath -Value $newContent -Force
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Update complete!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Updated from $currentVersion to $newVersion"
+    } catch {
+        Write-Err "Failed to download update: $($_.Exception.Message)"
+    }
+}
+
+Update-Byee

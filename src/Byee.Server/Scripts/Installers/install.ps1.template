@@ -7,6 +7,7 @@ $ProgressPreference = "SilentlyContinue"
 $BYEE_URL = "{{BYEE_URL}}"
 $BYEE_BIN_DIR = "$env:LOCALAPPDATA\byee\bin"
 $BYEE_DATA_DIR = "$env:LOCALAPPDATA\byee\data"
+$script:InstallFolders = $false
 
 function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
@@ -118,6 +119,36 @@ function Add-ToPath {
     Write-Success "Added to PATH"
 }
 
+function Request-FolderSupport {
+    # Check if running interactively
+    if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+        Write-Host ""
+        Write-Host "Would you like to enable folder support?" -ForegroundColor Yellow
+        Write-Host "This allows sending entire folders (they'll be zipped automatically)."
+        Write-Host "Windows has built-in zip support, so no additional tools are needed."
+        Write-Host ""
+        
+        $response = Read-Host "Enable folder support? [y/N]"
+        if ($response -eq "y" -or $response -eq "Y") {
+            $script:InstallFolders = $true
+        }
+    }
+}
+
+function Enable-FoldersInClient {
+    if ($script:InstallFolders) {
+        Write-Info "Enabling folder support in client..."
+        
+        $clientPath = Join-Path $BYEE_BIN_DIR "byee.ps1"
+        if (Test-Path $clientPath) {
+            $content = Get-Content $clientPath -Raw
+            $content = $content -replace '\$BYEE_FOLDERS_ENABLED\s*=\s*\$false', '$BYEE_FOLDERS_ENABLED = $true'
+            Set-Content -Path $clientPath -Value $content -Force
+            Write-Success "Folder support enabled"
+        }
+    }
+}
+
 function Main {
     Write-Host ""
     Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -143,8 +174,14 @@ function Main {
     # Install dependencies
     Install-Age
     
+    # Ask about folder support
+    Request-FolderSupport
+    
     # Install client
     Install-ByeeClient
+    
+    # Enable folder support if requested
+    Enable-FoldersInClient
     
     # Setup PATH
     Add-ToPath
@@ -159,6 +196,13 @@ function Main {
     Write-Host "Send a file"
     Write-Host "  byee receive <id> <key>  " -ForegroundColor Yellow -NoNewline
     Write-Host "Receive a file"
+    if ($script:InstallFolders) {
+        Write-Host "  byee .\myFolder           " -ForegroundColor Yellow -NoNewline
+        Write-Host "Send a folder"
+    } else {
+        Write-Host ""
+        Write-Host "Tip: Run 'byee --enable-folders' to add folder support later." -ForegroundColor Cyan
+    }
     Write-Host ""
     Write-Host "Note: Restart your terminal to use 'byee' command" -ForegroundColor Yellow
 }

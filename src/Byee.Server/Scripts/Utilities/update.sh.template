@@ -1,0 +1,85 @@
+#!/bin/sh
+# Byee Update Script - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+set -e
+
+BYEE_URL="{{BYEE_URL}}"
+BYEE_BIN_DIR="${HOME}/.local/bin"
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
+
+info() { printf "${BLUE}[INFO]${NC} %s\n" "$1"; }
+success() { printf "${GREEN}[OK]${NC} %s\n" "$1"; }
+warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
+error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; exit 1; }
+
+# Detect OS
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)
+            if [ -f /etc/alpine-release ]; then
+                echo "alpine"
+            else
+                echo "linux"
+            fi
+            ;;
+        Darwin*)    echo "macos";;
+        *)          echo "unknown";;
+    esac
+}
+
+update_byee() {
+    info "Checking for updates..."
+    
+    local os=$(detect_os)
+    
+    if [ ! -f "$BYEE_BIN_DIR/byee" ]; then
+        error "Byee is not installed. Run the installer first: curl -fsSL $BYEE_URL | sh"
+    fi
+    
+    # Get current version
+    current_version=$(grep "^BYEE_VERSION=" "$BYEE_BIN_DIR/byee" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+    info "Current version: $current_version"
+    
+    # Download new client
+    info "Downloading latest byee client..."
+    tmp_file=$(mktemp)
+    
+    if curl -fsSL "${BYEE_URL}/client/${os}" -o "$tmp_file"; then
+        new_version=$(grep "^BYEE_VERSION=" "$tmp_file" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+        
+        # Preserve folder support config
+        has_folders=$(grep "^BYEE_FOLDERS_ENABLED=" "$BYEE_BIN_DIR/byee" 2>/dev/null | cut -d'"' -f2 || echo "false")
+        
+        mv "$tmp_file" "$BYEE_BIN_DIR/byee"
+        chmod +x "$BYEE_BIN_DIR/byee"
+        
+        # Restore folder support config if it was enabled
+        if [ "$has_folders" = "true" ]; then
+            sed -i.bak 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || \
+            sed -i '' 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || true
+            rm -f "$BYEE_BIN_DIR/byee.bak"
+        fi
+        
+        printf "\n"
+        printf "${GREEN}========================================${NC}\n"
+        printf "${GREEN} Update complete!${NC}\n"
+        printf "${GREEN}========================================${NC}\n"
+        printf "\n"
+        printf "Updated from ${YELLOW}%s${NC} to ${GREEN}%s${NC}\n" "$current_version" "$new_version"
+    else
+        rm -f "$tmp_file"
+        error "Failed to download update"
+    fi
+}
+
+update_byee

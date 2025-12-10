@@ -4,11 +4,18 @@
 # 
 # Usage:
 #   byee ./file.zip                     Send a file (encrypted)
+#   byee ./myFolder                     Send a folder (zipped, encrypted)
 #   byee --no-encrypt ./file.zip        Send without encryption
 #   byee receive <id> [key]             Receive a file
+#   byee --server <url> ./file.zip      Use different server temporarily
+#   byee --update                       Update byee client
+#   byee --uninstall                    Uninstall byee
+#   byee --enable-folders               Enable folder support
 
 BYEE_URL="{{BYEE_URL}}"
 BYEE_VERSION="{{BYEE_VERSION}}"
+BYEE_FOLDERS_ENABLED="false"
+BYEE_SERVER_OVERRIDE=""
 
 # Colors
 if [ -t 1 ]; then
@@ -72,14 +79,189 @@ check_deps_encryption() {
     fi
 }
 
+# Check folder/zip dependencies
+check_deps_folders() {
+    if ! command -v zip >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
+        error "zip/unzip required for folder support. Run: byee --enable-folders"
+    fi
+}
+
+# Get the effective server URL (with override support)
+get_server_url() {
+    if [ -n "$BYEE_SERVER_OVERRIDE" ]; then
+        echo "$BYEE_SERVER_OVERRIDE"
+    else
+        echo "$BYEE_URL"
+    fi
+}
+
+# Detect OS
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)
+            if [ -f /etc/alpine-release ]; then
+                echo "alpine"
+            else
+                echo "linux"
+            fi
+            ;;
+        Darwin*)    echo "macos";;
+        *)          echo "unknown";;
+    esac
+}
+
 # Send a file
 send_file() {
     file="$1"
     encrypt="$2"
+    is_folder="false"
     
-    if [ ! -f "$file" ]; then
-        error "File not found: $file"
+    # Check if it's a directory
+    if [ -d "$file" ]; then
+        if [ "$BYEE_FOLDERS_ENABLED" != "true" ]; then
+            error "Folder support is not enabled. Run: byee --enable-folders"
+        fi
+        check_deps_folders
+        is_folder="true"
+    elif [ ! -f "$file" ]; then
+        error "File or folder not found: $file"
     fi
+    
+    if [ "$is_folder" = "true" ]; then
+        send_folder "$file" "$encrypt"
+    else
+        send_regular_file "$file" "$encrypt" "false"
+    fi
+}
+
+# Send a folder (zip and upload)
+send_folder() {
+    folder="$1"
+    encrypt="$2"
+    
+    foldername=$(basename "$folder")
+    # Get folder size
+    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    foldersize_human=$(format_size "$foldersize")
+    
+    printf "${BLUE}[INFO]${NC} Preparing to send folder: ${BOLD}%s${NC} (%s)\n" "$foldername" "$foldersize_human"
+    
+    if [ "$encrypt" = "true" ]; then
+        check_deps_encryption
+        info "Zipping, encrypting and uploading..."
+        send_folder_encrypted "$folder" "$foldername"
+    else
+        info "Zipping and uploading..."
+        send_folder_raw "$folder" "$foldername"
+    fi
+}
+
+# Send folder encrypted (pipe zip -> age -> curl)
+send_folder_encrypted() {
+    folder="$1"
+    foldername="$2"
+    server_url=$(get_server_url)
+    
+    # Generate age key pair
+    tmp_key=$(mktemp -u)
+    age-keygen -o "$tmp_key" 2>/dev/null
+    pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
+    secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
+    short_key=$(shorten_key "$secret_key")
+    
+    if [ -z "$pubkey" ]; then
+        rm -f "$tmp_key"
+        error "Failed to generate encryption key"
+    fi
+    
+    info "Generated encryption key"
+    
+    # Get original folder size for header
+    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    
+    # Pipe: zip -> age -> curl (no temp files)
+    cd "$(dirname "$folder")"
+    response=$(zip -r -q - "$(basename "$folder")" | \
+        age -r "$pubkey" | \
+        curl -s --fail -X POST "${server_url}/upload" \
+            -H "Content-Type: application/octet-stream" \
+            -H "X-Byee-Filename: ${foldername}.zip" \
+            -H "X-Byee-Size: $foldersize" \
+            -H "X-Byee-Encrypted: true" \
+            -H "X-Byee-IsFolder: true" \
+            --data-binary @- 2>&1)
+    curl_exit=$?
+    cd - >/dev/null
+    
+    rm -f "$tmp_key"
+    
+    if [ $curl_exit -ne 0 ]; then
+        error "Upload failed: $response"
+    fi
+    
+    file_id=$(echo "$response" | jq -r '.id // empty')
+    
+    if [ -z "$file_id" ]; then
+        error "Failed to get file ID from server response: $response"
+    fi
+    
+    printf "\n"
+    printf "${GREEN}========================================${NC}\n"
+    printf "${GREEN} Upload complete! (folder)${NC}\n"
+    printf "${GREEN}========================================${NC}\n"
+    printf "\n"
+    printf "Share this command with the recipient:\n\n"
+    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$short_key"
+    printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
+}
+
+# Send folder raw (pipe zip -> curl)
+send_folder_raw() {
+    folder="$1"
+    foldername="$2"
+    server_url=$(get_server_url)
+    
+    # Get original folder size for header
+    foldersize=$(du -sb "$folder" 2>/dev/null | cut -f1 || du -sk "$folder" 2>/dev/null | awk '{print $1 * 1024}' || echo 0)
+    
+    # Pipe: zip -> curl (no temp files)
+    cd "$(dirname "$folder")"
+    response=$(zip -r -q - "$(basename "$folder")" | \
+        curl -s --fail -X POST "${server_url}/upload" \
+            -H "Content-Type: application/octet-stream" \
+            -H "X-Byee-Filename: ${foldername}.zip" \
+            -H "X-Byee-Size: $foldersize" \
+            -H "X-Byee-Encrypted: false" \
+            -H "X-Byee-IsFolder: true" \
+            --data-binary @- 2>&1)
+    curl_exit=$?
+    cd - >/dev/null
+    
+    if [ $curl_exit -ne 0 ]; then
+        error "Upload failed: $response"
+    fi
+    
+    file_id=$(echo "$response" | jq -r '.id // empty')
+    
+    if [ -z "$file_id" ]; then
+        error "Failed to get file ID from server response: $response"
+    fi
+    
+    printf "\n"
+    printf "${GREEN}========================================${NC}\n"
+    printf "${GREEN} Upload complete! (folder)${NC}\n"
+    printf "${GREEN}========================================${NC}\n"
+    printf "\n"
+    printf "Share this command with the recipient:\n\n"
+    printf "  ${CYAN}${BOLD}byee receive %s${NC}\n\n" "$file_id"
+    printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
+}
+
+# Send regular file
+send_regular_file() {
+    file="$1"
+    encrypt="$2"
+    is_folder="$3"
     
     filename=$(basename "$file")
     filesize=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
@@ -100,6 +282,7 @@ send_file_encrypted() {
     file="$1"
     filename="$2"
     filesize="$3"
+    server_url=$(get_server_url)
     
     # Generate age key pair
     tmp_key=$(mktemp -u)  # -u creates a name without creating the file
@@ -127,7 +310,7 @@ send_file_encrypted() {
     fi
     
     # Upload - use --fail-with-body if available, otherwise just --fail
-    response=$(curl -s --fail -X POST "${BYEE_URL}/upload" \
+    response=$(curl -s --fail -X POST "${server_url}/upload" \
         -H "Content-Type: application/octet-stream" \
         -H "X-Byee-Filename: $filename" \
         -H "X-Byee-Size: $filesize" \
@@ -162,10 +345,11 @@ send_file_raw() {
     file="$1"
     filename="$2"
     filesize="$3"
+    server_url=$(get_server_url)
     
     info "Uploading..."
     
-    response=$(curl -s --fail -X POST "${BYEE_URL}/upload" \
+    response=$(curl -s --fail -X POST "${server_url}/upload" \
         -H "Content-Type: application/octet-stream" \
         -H "X-Byee-Filename: $filename" \
         -H "X-Byee-Size: $filesize" \
@@ -197,6 +381,7 @@ send_file_raw() {
 receive_file() {
     file_id="$1"
     secret_key="$2"
+    server_url=$(get_server_url)
     
     if [ -z "$file_id" ]; then
         error "Usage: byee receive <id> [key]"
@@ -205,7 +390,7 @@ receive_file() {
     info "Requesting file info..."
     
     # Get file info and claim
-    info_response=$(curl -s "${BYEE_URL}/download/${file_id}?info=true" -w "\n%{http_code}")
+    info_response=$(curl -s "${server_url}/download/${file_id}?info=true" -w "\n%{http_code}")
     http_code=$(echo "$info_response" | tail -n1)
     info_response=$(echo "$info_response" | sed '$d')
     
@@ -221,6 +406,7 @@ receive_file() {
     filesize=$(echo "$info_response" | jq -r '.size // 0')
     filesize_human=$(echo "$info_response" | jq -r '.size_human // "unknown"')
     claim_token=$(echo "$info_response" | jq -r '.claim_token // empty')
+    is_folder=$(echo "$info_response" | jq -r '.is_folder // false')
     
     if [ -z "$claim_token" ]; then
         error "Failed to claim file"
@@ -234,6 +420,9 @@ receive_file() {
     printf "${CYAN} File: ${BOLD}%s${NC}\n" "$filename"
     printf "${CYAN} Size: %s${NC}\n" "$filesize_human"
     printf "${CYAN} Encrypted: %s${NC}\n" "$is_encrypted"
+    if [ "$is_folder" = "true" ]; then
+        printf "${CYAN} Type: Folder (zipped)${NC}\n"
+    fi
     printf "${CYAN}========================================${NC}\n"
     printf "\n"
     
@@ -278,7 +467,7 @@ receive_file() {
         echo "$full_key" > "$tmp_key"
         
         # Download to temp file
-        curl -s --fail -o "$tmp_encrypted" "${BYEE_URL}/download/${file_id}" \
+        curl -s --fail -o "$tmp_encrypted" "${server_url}/download/${file_id}" \
             -H "X-Byee-Claim-Token: $claim_token"
         curl_exit=$?
         
@@ -297,7 +486,7 @@ receive_file() {
     else
         info "Downloading..."
         
-        curl -s --fail -o "$output_file" "${BYEE_URL}/download/${file_id}" \
+        curl -s --fail -o "$output_file" "${server_url}/download/${file_id}" \
             -H "X-Byee-Claim-Token: $claim_token"
         curl_exit=$?
         
@@ -316,6 +505,37 @@ receive_file() {
     actual_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo 0)
     actual_size_human=$(format_size "$actual_size")
     
+    # Handle folder extraction
+    if [ "$is_folder" = "true" ]; then
+        if [ "$BYEE_FOLDERS_ENABLED" = "true" ] && command -v unzip >/dev/null 2>&1; then
+            printf "\n"
+            printf "This is a folder archive. Extract it? [Y/n]: "
+            read extract_confirm
+            
+            if [ "$extract_confirm" != "n" ] && [ "$extract_confirm" != "N" ]; then
+                # Get folder name (filename without .zip)
+                folder_name="${output_file%.zip}"
+                if [ "$folder_name" = "$output_file" ]; then
+                    folder_name="${output_file}_extracted"
+                fi
+                
+                info "Extracting to $folder_name..."
+                unzip -q -o "$output_file" -d "$folder_name"
+                rm -f "$output_file"
+                
+                printf "\n"
+                printf "${GREEN}========================================${NC}\n"
+                printf "${GREEN} Download & Extract complete!${NC}\n"
+                printf "${GREEN}========================================${NC}\n"
+                printf "\n"
+                printf "Extracted to: ${BOLD}%s${NC}\n" "$folder_name"
+                return
+            fi
+        else
+            warn "This is a folder archive. Enable folder support to auto-extract: byee --enable-folders"
+        fi
+    fi
+    
     printf "\n"
     printf "${GREEN}========================================${NC}\n"
     printf "${GREEN} Download complete!${NC}\n"
@@ -324,22 +544,84 @@ receive_file() {
     printf "Saved: ${BOLD}%s${NC} (%s)\n" "$output_file" "$actual_size_human"
 }
 
+# Run update
+do_update() {
+    local os=$(detect_os)
+    info "Fetching update script..."
+    curl -fsSL "${BYEE_URL}/update/${os}" | sh
+}
+
+# Run uninstall
+do_uninstall() {
+    local os=$(detect_os)
+    local args="$1"
+    
+    info "Fetching uninstall script..."
+    if [ -n "$args" ]; then
+        curl -fsSL "${BYEE_URL}/uninstall/${os}" | sh -s -- $args
+    else
+        curl -fsSL "${BYEE_URL}/uninstall/${os}" | sh
+    fi
+}
+
+# Enable folder support
+do_enable_folders() {
+    if [ "$BYEE_FOLDERS_ENABLED" = "true" ]; then
+        success "Folder support is already enabled!"
+        exit 0
+    fi
+    
+    local os=$(detect_os)
+    info "Fetching enable-folders script..."
+    curl -fsSL "${BYEE_URL}/enable-folders/${os}" | sh
+}
+
 # Show usage
 usage() {
     printf "Byee - One-time file transfer\n"
     printf "Server: %s\n" "$BYEE_URL"
-    printf "Version: %s\n\n" "$BYEE_VERSION"
+    printf "Version: %s\n"
+    printf "Folders: %s\n\n" "$BYEE_FOLDERS_ENABLED"
     printf "Usage:\n"
-    printf "  byee <file>                     Send a file (encrypted by default)\n"
-    printf "  byee --no-encrypt <file>        Send a file without encryption\n"
-    printf "  byee receive <id> [key]         Receive a file\n"
-    printf "  byee --help                     Show this help\n"
-    printf "  byee --version                  Show version\n"
+    printf "  byee <file>                       Send a file (encrypted by default)\n"
+    printf "  byee <folder>                     Send a folder (if folder support enabled)\n"
+    printf "  byee --no-encrypt <file>          Send without encryption\n"
+    printf "  byee receive <id> [key]           Receive a file\n"
+    printf "  byee --server <url> <file>        Use different server temporarily\n"
+    printf "  byee --server <url> receive ...   Receive from different server\n"
+    printf "\n"
+    printf "Management:\n"
+    printf "  byee --update                     Update byee client\n"
+    printf "  byee --uninstall                  Interactive uninstall\n"
+    printf "  byee --uninstall all              Uninstall everything\n"
+    printf "  byee --uninstall --deps age,jq    Uninstall client + specified deps\n"
+    printf "  byee --enable-folders             Enable folder support\n"
+    printf "\n"
+    printf "Options:\n"
+    printf "  byee --help                       Show this help\n"
+    printf "  byee --version                    Show version\n"
 }
 
 # Main
 main() {
     check_deps_basic
+    
+    # Parse --server option first (can appear anywhere before command)
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --server|-s)
+                shift
+                if [ -z "$1" ]; then
+                    error "Missing server URL after --server"
+                fi
+                BYEE_SERVER_OVERRIDE="$1"
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
     
     case "${1:-}" in
         ""|--help|-h)
@@ -348,6 +630,17 @@ main() {
         --version|-v)
             echo "byee $BYEE_VERSION"
             echo "Server: $BYEE_URL"
+            echo "Folders enabled: $BYEE_FOLDERS_ENABLED"
+            ;;
+        --update)
+            do_update
+            ;;
+        --uninstall)
+            shift
+            do_uninstall "$*"
+            ;;
+        --enable-folders)
+            do_enable_folders
             ;;
         receive|recv|r)
             shift

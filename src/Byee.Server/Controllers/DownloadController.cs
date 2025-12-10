@@ -77,7 +77,8 @@ public class DownloadController : ControllerBase
             FileName = metadata.FileName,
             Size = metadata.Size,
             SizeHuman = FormatSize(metadata.Size),
-            ClaimToken = claimToken
+            ClaimToken = claimToken,
+            IsFolder = metadata.IsFolder
         });
     }
 
@@ -116,6 +117,7 @@ public class DownloadController : ControllerBase
         Response.Headers.ContentDisposition = $"attachment; filename=\"{metadata.FileName}.age\"";
         Response.Headers["X-Byee-Filename"] = metadata.FileName;
         Response.Headers["X-Byee-Size"] = metadata.Size.ToString();
+        Response.Headers["X-Byee-IsFolder"] = metadata.IsFolder.ToString().ToLowerInvariant();
         Response.ContentLength = metadata.EncryptedSize;
 
         // Register callback to delete file after download completes

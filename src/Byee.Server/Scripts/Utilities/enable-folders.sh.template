@@ -1,0 +1,161 @@
+#!/bin/sh
+# Byee Enable Folders Script - Auto-generated for {{BYEE_URL}}
+# Version: {{BYEE_VERSION}}
+set -e
+
+BYEE_URL="{{BYEE_URL}}"
+BYEE_BIN_DIR="${HOME}/.local/bin"
+
+# Colors
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
+
+info() { printf "${BLUE}[INFO]${NC} %s\n" "$1"; }
+success() { printf "${GREEN}[OK]${NC} %s\n" "$1"; }
+warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
+error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; exit 1; }
+
+# Detect OS
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)
+            if [ -f /etc/alpine-release ]; then
+                echo "alpine"
+            else
+                echo "linux"
+            fi
+            ;;
+        Darwin*)    echo "macos";;
+        *)          echo "unknown";;
+    esac
+}
+
+# Detect package manager
+detect_pkg_manager() {
+    if command -v apk >/dev/null 2>&1; then
+        echo "apk"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v brew >/dev/null 2>&1; then
+        echo "brew"
+    else
+        echo "unknown"
+    fi
+}
+
+# Check if folder support is already enabled
+check_folders_enabled() {
+    if [ -f "$BYEE_BIN_DIR/byee" ]; then
+        if grep -q 'BYEE_FOLDERS_ENABLED="true"' "$BYEE_BIN_DIR/byee" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Install zip tools
+install_zip_tools() {
+    local os=$(detect_os)
+    local pkg_manager=$(detect_pkg_manager)
+    
+    # Check if already installed
+    if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+        success "zip and unzip already installed"
+        return 0
+    fi
+    
+    info "Installing zip tools for folder support..."
+    
+    case "$pkg_manager" in
+        apk)
+            sudo apk add --no-cache zip unzip || apk add --no-cache zip unzip
+            ;;
+        apt)
+            sudo apt-get update && sudo apt-get install -y zip unzip
+            ;;
+        dnf|yum)
+            sudo $pkg_manager install -y zip unzip
+            ;;
+        pacman)
+            sudo pacman -Sy --noconfirm zip unzip
+            ;;
+        brew)
+            # macOS has built-in zip/unzip via ditto, but we can also use zip
+            if ! command -v zip >/dev/null 2>&1; then
+                brew install zip
+            fi
+            ;;
+        *)
+            error "Cannot install zip tools. Please install zip and unzip manually."
+            ;;
+    esac
+    
+    success "Zip tools installed"
+}
+
+# Enable folder support in byee client
+enable_folders_in_client() {
+    if [ ! -f "$BYEE_BIN_DIR/byee" ]; then
+        error "Byee is not installed. Run the installer first: curl -fsSL $BYEE_URL | sh"
+    fi
+    
+    info "Enabling folder support in byee client..."
+    
+    # Update the BYEE_FOLDERS_ENABLED variable in the client
+    if grep -q 'BYEE_FOLDERS_ENABLED=' "$BYEE_BIN_DIR/byee" 2>/dev/null; then
+        # Use sed to replace the value (handle both GNU and BSD sed)
+        sed -i.bak 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || \
+        sed -i '' 's/^BYEE_FOLDERS_ENABLED="false"/BYEE_FOLDERS_ENABLED="true"/' "$BYEE_BIN_DIR/byee" 2>/dev/null || \
+        error "Failed to update client configuration"
+        
+        rm -f "$BYEE_BIN_DIR/byee.bak"
+        success "Folder support enabled in client"
+    else
+        warn "Client does not have folder support variable. Please update your client first."
+        info "Run: byee --update"
+    fi
+}
+
+main() {
+    printf "\n"
+    printf "${BLUE}╔════════════════════════════════════════╗${NC}\n"
+    printf "${BLUE}║${NC}     Byee - Enable Folder Support        ${BLUE}║${NC}\n"
+    printf "${BLUE}╚════════════════════════════════════════╝${NC}\n"
+    printf "\n"
+    
+    if check_folders_enabled; then
+        success "Folder support is already enabled!"
+        printf "\n"
+        printf "You can now use:\n"
+        printf "  ${YELLOW}byee ./myFolder${NC}    Send a folder\n"
+        printf "\n"
+        exit 0
+    fi
+    
+    install_zip_tools
+    enable_folders_in_client
+    
+    printf "\n"
+    printf "${GREEN}╔════════════════════════════════════════╗${NC}\n"
+    printf "${GREEN}║${NC}     Folder Support Enabled!             ${GREEN}║${NC}\n"
+    printf "${GREEN}╚════════════════════════════════════════╝${NC}\n"
+    printf "\n"
+    printf "You can now use:\n"
+    printf "  ${YELLOW}byee ./myFolder${NC}    Send a folder (will be zipped automatically)\n"
+    printf "\n"
+}
+
+main

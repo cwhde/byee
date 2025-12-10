@@ -28,6 +28,7 @@ public class UploadController : ControllerBase
     /// Headers:
     ///   X-Byee-Filename: original filename
     ///   X-Byee-Size: original file size (before encryption)
+    ///   X-Byee-IsFolder: true if uploading a zipped folder
     /// </summary>
     [HttpPost("/upload")]
     [DisableRequestSizeLimit]
@@ -37,18 +38,21 @@ public class UploadController : ControllerBase
         // Get metadata from headers
         var fileName = Request.Headers["X-Byee-Filename"].FirstOrDefault() ?? "file";
         var sizeHeader = Request.Headers["X-Byee-Size"].FirstOrDefault();
+        var isFolderHeader = Request.Headers["X-Byee-IsFolder"].FirstOrDefault();
         
         if (!long.TryParse(sizeHeader, out var originalSize))
         {
             originalSize = 0; // Unknown size
         }
 
-        _logger.LogInformation("Upload started: {FileName} ({Size} bytes)", fileName, originalSize);
+        var isFolder = string.Equals(isFolderHeader, "true", StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogInformation("Upload started: {FileName} ({Size} bytes, isFolder: {IsFolder})", fileName, originalSize, isFolder);
 
         try
         {
             // Stream directly from request body to storage
-            var id = await _storage.StoreFileAsync(Request.Body, fileName, originalSize, ct);
+            var id = await _storage.StoreFileAsync(Request.Body, fileName, originalSize, isFolder, ct);
 
             var publicUrl = _options.PublicUrl.TrimEnd('/');
             var command = $"byee receive {id} <KEY>";

@@ -21,6 +21,12 @@
     <EmbeddedResource Include="Scripts/Installers/install.ps1.template" LogicalName="Byee.Server.Scripts.Installers.install.ps1.template" WithCulture="false" />
     <EmbeddedResource Include="Scripts/Clients/byee.sh.template" LogicalName="Byee.Server.Scripts.Clients.byee.sh.template" WithCulture="false" />
     <EmbeddedResource Include="Scripts/Clients/byee.ps1.template" LogicalName="Byee.Server.Scripts.Clients.byee.ps1.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/update.sh.template" LogicalName="Byee.Server.Scripts.Utilities.update.sh.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/update.ps1.template" LogicalName="Byee.Server.Scripts.Utilities.update.ps1.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/uninstall.sh.template" LogicalName="Byee.Server.Scripts.Utilities.uninstall.sh.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/uninstall.ps1.template" LogicalName="Byee.Server.Scripts.Utilities.uninstall.ps1.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/enable-folders.sh.template" LogicalName="Byee.Server.Scripts.Utilities.enable-folders.sh.template" WithCulture="false" />
+    <EmbeddedResource Include="Scripts/Utilities/enable-folders.ps1.template" LogicalName="Byee.Server.Scripts.Utilities.enable-folders.ps1.template" WithCulture="false" />
   </ItemGroup>
 
   <ItemGroup>

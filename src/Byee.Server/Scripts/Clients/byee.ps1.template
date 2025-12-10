@@ -3,8 +3,13 @@
 #
 # Usage:
 #   byee .\file.zip                     Send a file (encrypted by default)
+#   byee .\myFolder                     Send a folder (if folder support enabled)
 #   byee --no-encrypt .\file.zip        Send without encryption
 #   byee receive <id> [key]             Receive a file
+#   byee --server <url> .\file.zip      Use different server temporarily
+#   byee --update                       Update byee client
+#   byee --uninstall                    Uninstall byee
+#   byee --enable-folders               Enable folder support
 
 param(
     [Parameter(Position=0)]
@@ -14,12 +19,17 @@ param(
     [string]$Arg1,
     
     [Parameter(Position=2)]
-    [string]$Arg2
+    [string]$Arg2,
+    
+    [Parameter(Position=3)]
+    [string]$Arg3
 )
 
 $ErrorActionPreference = "Stop"
 $BYEE_URL = "{{BYEE_URL}}"
 $BYEE_VERSION = "{{BYEE_VERSION}}"
+$BYEE_FOLDERS_ENABLED = $false
+$script:ServerOverride = ""
 
 function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
@@ -42,6 +52,13 @@ function Get-FullKey($key) {
     return "AGE-SECRET-KEY-$key"
 }
 
+function Get-ServerUrl {
+    if ($script:ServerOverride) {
+        return $script:ServerOverride
+    }
+    return $BYEE_URL
+}
+
 function Test-EncryptionDeps {
     $deps = @("age", "age-keygen")
     foreach ($dep in $deps) {
@@ -52,8 +69,17 @@ function Test-EncryptionDeps {
 }
 
 function Send-File($FilePath, $Encrypt = $true) {
-    if (-not (Test-Path $FilePath)) {
-        Write-Err "File not found: $FilePath"
+    # Check if it's a directory
+    if (Test-Path $FilePath -PathType Container) {
+        if (-not $BYEE_FOLDERS_ENABLED) {
+            Write-Err "Folder support is not enabled. Run: byee --enable-folders"
+        }
+        Send-Folder $FilePath $Encrypt
+        return
+    }
+    
+    if (-not (Test-Path $FilePath -PathType Leaf)) {
+        Write-Err "File or folder not found: $FilePath"
     }
     
     $file = Get-Item $FilePath
@@ -71,7 +97,147 @@ function Send-File($FilePath, $Encrypt = $true) {
     }
 }
 
+function Send-Folder($FolderPath, $Encrypt = $true) {
+    $folder = Get-Item $FolderPath
+    $foldername = $folder.Name
+    $foldersize = (Get-ChildItem $FolderPath -Recurse | Measure-Object -Property Length -Sum).Sum
+    $filesizeHuman = Format-FileSize $foldersize
+    
+    Write-Info "Preparing to send folder: $foldername ($filesizeHuman)"
+    
+    if ($Encrypt) {
+        Test-EncryptionDeps
+        Send-FolderEncrypted $FolderPath $foldername
+    } else {
+        Send-FolderRaw $FolderPath $foldername
+    }
+}
+
+function Send-FolderEncrypted($FolderPath, $foldername) {
+    $serverUrl = Get-ServerUrl
+    $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
+    $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) "byee-zip-$([guid]::NewGuid().ToString('N')).zip"
+    $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).age"
+    
+    try {
+        # Generate age key pair
+        $ErrorActionPreference = "SilentlyContinue"
+        & age-keygen -o $tmpKeyFile 2>$null
+        $ErrorActionPreference = "Stop"
+        
+        $keyContent = Get-Content $tmpKeyFile -Raw
+        $pubkeyMatch = $keyContent | Select-String "# public key: (.+)"
+        if (-not $pubkeyMatch) {
+            Write-Err "Failed to get public key from age-keygen output"
+        }
+        $pubkey = $pubkeyMatch.Matches[0].Groups[1].Value.Trim()
+        $secretKey = ($keyContent | Select-String "(AGE-SECRET-KEY-\S+)").Matches[0].Groups[1].Value
+        $shortKey = Get-ShortKey $secretKey
+        
+        Write-Info "Generated encryption key"
+        Write-Info "Zipping, encrypting and uploading..."
+        
+        # Zip folder
+        Compress-Archive -Path $FolderPath -DestinationPath $tempZip -Force
+        
+        # Get original folder size
+        $foldersize = (Get-ChildItem $FolderPath -Recurse | Measure-Object -Property Length -Sum).Sum
+        
+        # Encrypt zip
+        & age -r $pubkey -o $tempEncrypted $tempZip
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Encryption failed"
+        }
+        
+        # Upload
+        $headers = @{
+            "X-Byee-Filename" = "$foldername.zip"
+            "X-Byee-Size" = $foldersize.ToString()
+            "X-Byee-Encrypted" = "true"
+            "X-Byee-IsFolder" = "true"
+        }
+        
+        try {
+            $response = Invoke-RestMethod -Uri "$serverUrl/upload" -Method Post -InFile $tempEncrypted -Headers $headers -ContentType "application/octet-stream"
+        } catch {
+            $statusCode = $_.Exception.Response.StatusCode.value__
+            Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
+        }
+        
+        $fileId = $response.id
+        if (-not $fileId) {
+            Write-Err "Failed to get file ID from server response"
+        }
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Upload complete! (folder)" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Share this command with the recipient:" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  byee receive $fileId $shortKey" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
+        
+    } finally {
+        if (Test-Path $tmpKeyFile) { Remove-Item $tmpKeyFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $tempEncrypted) { Remove-Item $tempEncrypted -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Send-FolderRaw($FolderPath, $foldername) {
+    $serverUrl = Get-ServerUrl
+    $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) "byee-zip-$([guid]::NewGuid().ToString('N')).zip"
+    
+    try {
+        Write-Info "Zipping and uploading..."
+        
+        # Zip folder
+        Compress-Archive -Path $FolderPath -DestinationPath $tempZip -Force
+        
+        # Get original folder size
+        $foldersize = (Get-ChildItem $FolderPath -Recurse | Measure-Object -Property Length -Sum).Sum
+        
+        # Upload
+        $headers = @{
+            "X-Byee-Filename" = "$foldername.zip"
+            "X-Byee-Size" = $foldersize.ToString()
+            "X-Byee-Encrypted" = "false"
+            "X-Byee-IsFolder" = "true"
+        }
+        
+        try {
+            $response = Invoke-RestMethod -Uri "$serverUrl/upload" -Method Post -InFile $tempZip -Headers $headers -ContentType "application/octet-stream"
+        } catch {
+            $statusCode = $_.Exception.Response.StatusCode.value__
+            Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
+        }
+        
+        $fileId = $response.id
+        if (-not $fileId) {
+            Write-Err "Failed to get file ID from server response"
+        }
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Upload complete! (folder)" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Share this command with the recipient:" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  byee receive $fileId" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Note: This file can only be downloaded ONCE!" -ForegroundColor Yellow
+        
+    } finally {
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Send-FileEncrypted($FilePath, $filename, $filesize) {
+    $serverUrl = Get-ServerUrl
     $tmpKeyFile = Join-Path ([System.IO.Path]::GetTempPath()) "byee-key-$([guid]::NewGuid().ToString('N')).txt"
     $tempEncrypted = Join-Path ([System.IO.Path]::GetTempPath()) "byee-enc-$([guid]::NewGuid().ToString('N')).age"
     
@@ -107,7 +273,7 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
         }
         
         try {
-            $response = Invoke-RestMethod -Uri "$BYEE_URL/upload" -Method Post -InFile $tempEncrypted -Headers $headers -ContentType "application/octet-stream"
+            $response = Invoke-RestMethod -Uri "$serverUrl/upload" -Method Post -InFile $tempEncrypted -Headers $headers -ContentType "application/octet-stream"
         } catch {
             $statusCode = $_.Exception.Response.StatusCode.value__
             Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
@@ -136,6 +302,7 @@ function Send-FileEncrypted($FilePath, $filename, $filesize) {
 }
 
 function Send-FileRaw($FilePath, $filename, $filesize) {
+    $serverUrl = Get-ServerUrl
     Write-Info "Uploading..."
     
     $headers = @{
@@ -145,7 +312,7 @@ function Send-FileRaw($FilePath, $filename, $filesize) {
     }
     
     try {
-        $response = Invoke-RestMethod -Uri "$BYEE_URL/upload" -Method Post -InFile $FilePath -Headers $headers -ContentType "application/octet-stream"
+        $response = Invoke-RestMethod -Uri "$serverUrl/upload" -Method Post -InFile $FilePath -Headers $headers -ContentType "application/octet-stream"
     } catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
         Write-Err "Upload failed (HTTP $statusCode): $($_.Exception.Message)"
@@ -169,6 +336,8 @@ function Send-FileRaw($FilePath, $filename, $filesize) {
 }
 
 function Receive-File($FileId, $SecretKey) {
+    $serverUrl = Get-ServerUrl
+    
     if (-not $FileId) {
         Write-Err "Usage: byee receive <id> [key]"
     }
@@ -177,7 +346,7 @@ function Receive-File($FileId, $SecretKey) {
     
     # Get file info and claim
     try {
-        $infoResponse = Invoke-RestMethod -Uri "$BYEE_URL/download/$FileId`?info=true" -Method Get
+        $infoResponse = Invoke-RestMethod -Uri "$serverUrl/download/$FileId`?info=true" -Method Get
     } catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
         if ($statusCode -eq 404) {
@@ -193,6 +362,7 @@ function Receive-File($FileId, $SecretKey) {
     $filesize = $infoResponse.size
     $filesizeHuman = $infoResponse.size_human
     $claimToken = $infoResponse.claim_token
+    $isFolder = [bool]$infoResponse.is_folder
     $isEncrypted = [bool]$SecretKey
     
     if (-not $claimToken) {
@@ -204,6 +374,9 @@ function Receive-File($FileId, $SecretKey) {
     Write-Host " File: $filename" -ForegroundColor Cyan
     Write-Host " Size: $filesizeHuman" -ForegroundColor Cyan
     Write-Host " Encrypted: $(if ($isEncrypted) { 'Yes' } else { 'No' })" -ForegroundColor Cyan
+    if ($isFolder) {
+        Write-Host " Type: Folder (zipped)" -ForegroundColor Cyan
+    }
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     
@@ -244,7 +417,7 @@ function Receive-File($FileId, $SecretKey) {
             # Download encrypted file
             $headers = @{ "X-Byee-Claim-Token" = $claimToken }
             try {
-                Invoke-WebRequest -Uri "$BYEE_URL/download/$FileId" -OutFile $tempEncrypted -Headers $headers
+                Invoke-WebRequest -Uri "$serverUrl/download/$FileId" -OutFile $tempEncrypted -Headers $headers
             } catch {
                 Write-Err "Download failed: $($_.Exception.Message)"
             }
@@ -264,7 +437,7 @@ function Receive-File($FileId, $SecretKey) {
         
         $headers = @{ "X-Byee-Claim-Token" = $claimToken }
         try {
-            Invoke-WebRequest -Uri "$BYEE_URL/download/$FileId" -OutFile $outputFile -Headers $headers
+            Invoke-WebRequest -Uri "$serverUrl/download/$FileId" -OutFile $outputFile -Headers $headers
         } catch {
             Write-Err "Download failed: $($_.Exception.Message)"
         }
@@ -272,6 +445,33 @@ function Receive-File($FileId, $SecretKey) {
     
     $actualSize = (Get-Item $outputFile).Length
     $actualSizeHuman = Format-FileSize $actualSize
+    
+    # Handle folder extraction
+    if ($isFolder -and $BYEE_FOLDERS_ENABLED) {
+        Write-Host ""
+        $extractConfirm = Read-Host "This is a folder archive. Extract it? [Y/n]"
+        
+        if ($extractConfirm -ne "n" -and $extractConfirm -ne "N") {
+            $folderName = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
+            if ($folderName -eq $outputFile) {
+                $folderName = "${outputFile}_extracted"
+            }
+            
+            Write-Info "Extracting to $folderName..."
+            Expand-Archive -Path $outputFile -DestinationPath $folderName -Force
+            Remove-Item $outputFile -Force
+            
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host " Download & Extract complete!" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "Extracted to: $folderName"
+            return
+        }
+    } elseif ($isFolder -and -not $BYEE_FOLDERS_ENABLED) {
+        Write-Warn "This is a folder archive. Enable folder support to auto-extract: byee --enable-folders"
+    }
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
@@ -281,20 +481,65 @@ function Receive-File($FileId, $SecretKey) {
     Write-Host "Saved: $outputFile ($actualSizeHuman)"
 }
 
+function Invoke-Update {
+    Write-Info "Fetching update script..."
+    Invoke-Expression (Invoke-WebRequest -Uri "$BYEE_URL/update/windows" -UseBasicParsing).Content
+}
+
+function Invoke-Uninstall($Args) {
+    Write-Info "Fetching uninstall script..."
+    $script = (Invoke-WebRequest -Uri "$BYEE_URL/uninstall/windows" -UseBasicParsing).Content
+    if ($Args) {
+        Invoke-Expression "$script -Mode $Args"
+    } else {
+        Invoke-Expression $script
+    }
+}
+
+function Enable-Folders {
+    if ($BYEE_FOLDERS_ENABLED) {
+        Write-Success "Folder support is already enabled!"
+        exit 0
+    }
+    
+    Write-Info "Fetching enable-folders script..."
+    Invoke-Expression (Invoke-WebRequest -Uri "$BYEE_URL/enable-folders/windows" -UseBasicParsing).Content
+}
+
 function Show-Usage {
     Write-Host "Byee - One-time file transfer"
     Write-Host "Server: $BYEE_URL"
     Write-Host "Version: $BYEE_VERSION"
+    Write-Host "Folders: $BYEE_FOLDERS_ENABLED"
     Write-Host ""
     Write-Host "Usage:"
-    Write-Host "  byee <file>                     Send a file (encrypted by default)"
-    Write-Host "  byee --no-encrypt <file>        Send a file without encryption"
-    Write-Host "  byee receive <id> [key]         Receive a file"
-    Write-Host "  byee --help                     Show this help"
-    Write-Host "  byee --version                  Show version"
+    Write-Host "  byee <file>                       Send a file (encrypted by default)"
+    Write-Host "  byee <folder>                     Send a folder (if folder support enabled)"
+    Write-Host "  byee --no-encrypt <file>          Send without encryption"
+    Write-Host "  byee receive <id> [key]           Receive a file"
+    Write-Host "  byee --server <url> <file>        Use different server temporarily"
+    Write-Host "  byee --server <url> receive ...   Receive from different server"
+    Write-Host ""
+    Write-Host "Management:"
+    Write-Host "  byee --update                     Update byee client"
+    Write-Host "  byee --uninstall                  Interactive uninstall"
+    Write-Host "  byee --uninstall all              Uninstall everything"
+    Write-Host "  byee --enable-folders             Enable folder support"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  byee --help                       Show this help"
+    Write-Host "  byee --version                    Show version"
 }
 
 # Main
+# Handle --server option first
+if ($Command -eq "--server" -or $Command -eq "-s") {
+    $script:ServerOverride = $Arg1
+    $Command = $Arg2
+    $Arg1 = $Arg3
+    $Arg2 = $null
+}
+
 switch -Regex ($Command) {
     "^$|^--help$|^-h$" {
         Show-Usage
@@ -302,6 +547,16 @@ switch -Regex ($Command) {
     "^--version$|^-v$" {
         Write-Host "byee $BYEE_VERSION"
         Write-Host "Server: $BYEE_URL"
+        Write-Host "Folders enabled: $BYEE_FOLDERS_ENABLED"
+    }
+    "^--update$" {
+        Invoke-Update
+    }
+    "^--uninstall$" {
+        Invoke-Uninstall $Arg1
+    }
+    "^--enable-folders$" {
+        Enable-Folders
     }
     "^receive$|^recv$|^r$" {
         Receive-File $Arg1 $Arg2

@@ -28,4 +28,7 @@ public class FileMetadata
     [JsonPropertyName("claim_token")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ClaimToken { get; set; }
+
+    [JsonPropertyName("is_folder")]
+    public bool IsFolder { get; set; }
 }
