@@ -29,15 +29,15 @@ success() { printf "${GREEN}[OK]${NC} %s\n" "$1"; }
 warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
 error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; exit 1; }
 
-# Format bytes to human readable
+# Format bytes to human readable (using awk for POSIX compatibility)
 format_size() {
     local bytes=$1
     if [ "$bytes" -ge 1073741824 ]; then
-        printf "%.2f GB" $(echo "scale=2; $bytes / 1073741824" | bc)
+        awk "BEGIN {printf \"%.2f GB\", $bytes / 1073741824}"
     elif [ "$bytes" -ge 1048576 ]; then
-        printf "%.2f MB" $(echo "scale=2; $bytes / 1048576" | bc)
+        awk "BEGIN {printf \"%.2f MB\", $bytes / 1048576}"
     elif [ "$bytes" -ge 1024 ]; then
-        printf "%.2f KB" $(echo "scale=2; $bytes / 1024" | bc)
+        awk "BEGIN {printf \"%.2f KB\", $bytes / 1024}"
     else
         printf "%d B" "$bytes"
     fi
@@ -84,11 +84,9 @@ send_file() {
     
     if command -v pv >/dev/null 2>&1; then
         # With progress bar using pv
-        # Note: encrypted size is slightly larger than original
-        response=$(cat "$file" | \
-            pv -s "$filesize" -N "Encrypting & Uploading" -f 2>/dev/tty | \
+        response=$(pv -s "$filesize" -N "Encrypting & Uploading" -f "$file" 2>/dev/tty | \
             age -r "$pubkey" | \
-            curl -s -X POST "${BYEE_URL}/upload" \
+            curl -sf -X POST "${BYEE_URL}/upload" \
                 -H "Content-Type: application/octet-stream" \
                 -H "X-Byee-Filename: $filename" \
                 -H "X-Byee-Size: $filesize" \
@@ -97,17 +95,16 @@ send_file() {
                 -w "\n%{http_code}")
     else
         # Without progress bar
-        printf "Uploading... "
+        info "Uploading (install pv for progress bar)..."
         response=$(cat "$file" | \
             age -r "$pubkey" | \
-            curl -s -X POST "${BYEE_URL}/upload" \
+            curl -sf -X POST "${BYEE_URL}/upload" \
                 -H "Content-Type: application/octet-stream" \
                 -H "X-Byee-Filename: $filename" \
                 -H "X-Byee-Size: $filesize" \
                 -H "Transfer-Encoding: chunked" \
                 --data-binary @- \
                 -w "\n%{http_code}")
-        printf "done\n"
     fi
     
     # Parse response
@@ -221,21 +218,17 @@ receive_file() {
     
     # Stream: server -> curl -> pv (progress) -> age decrypt -> file
     if command -v pv >/dev/null 2>&1; then
-        # With progress bar
-        # Note: we use encrypted size for progress, which is close to original
-        curl -s "${BYEE_URL}/download/${file_id}" \
-            -H "X-Byee-Claim-Token: $claim_token" \
-            --fail | \
+        # With progress bar using pv
+        curl -sf "${BYEE_URL}/download/${file_id}" \
+            -H "X-Byee-Claim-Token: $claim_token" | \
             pv -s "$filesize" -N "Downloading & Decrypting" -f 2>/dev/tty | \
             age -d -i "$tmp_key" > "$output_file"
     else
-        # Without progress bar
-        printf "Downloading... "
-        curl -s "${BYEE_URL}/download/${file_id}" \
-            -H "X-Byee-Claim-Token: $claim_token" \
-            --fail | \
+        # Without pv - simple progress message
+        info "Downloading (install pv for progress bar)..."
+        curl -sf "${BYEE_URL}/download/${file_id}" \
+            -H "X-Byee-Claim-Token: $claim_token" | \
             age -d -i "$tmp_key" > "$output_file"
-        printf "done\n"
     fi
     
     local exit_code=$?
