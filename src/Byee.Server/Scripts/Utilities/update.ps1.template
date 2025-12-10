@@ -22,6 +22,45 @@ function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 
 # ║ in Update-Byee after the deprecation date. Users who haven't updated by     ║
 # ║ then can manually uninstall age if desired.                                  ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+
+function Test-Command($cmd) {
+    try {
+        Get-Command $cmd -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Check-Dependencies {
+    if (Test-Command "openssl") { return }
+    
+    Write-Warn "openssl not found (required for encryption)"
+    
+    if (Test-Command "winget") {
+        Write-Host ""
+        Write-Host "openssl is missing. Install it to ensure Byee works correctly?" -ForegroundColor Yellow
+        Write-Host "1) Install Git for Windows (Recommended)"
+        Write-Host "2) Install OpenSSL (Minimal)"
+        Write-Host "3) Skip"
+        
+        $choice = Read-Host "Choice [1/2/3] (default: 1)"
+        if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }
+        
+        if ($choice -eq "1") {
+            Write-Info "Installing Git for Windows..."
+            winget install --id Git.Git -e --source winget
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        } elseif ($choice -eq "2") {
+            Write-Info "Installing OpenSSL..."
+            winget install --id ShiningLight.OpenSSL -e --source winget
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        }
+    } else {
+        Write-Warn "Install Git for Windows manually to enable encryption: https://gitforwindows.org/"
+    }
+}
+
 function Offer-AgeRemoval {
     # Check if age is installed
     try {
@@ -125,9 +164,10 @@ function Update-Byee {
         
         # LEGACY: Check for and offer to remove age (see comment above Offer-AgeRemoval)
         Offer-AgeRemoval
-    } catch {
         Write-Err "Failed to download update: $($_.Exception.Message)"
     }
+    
+    Check-Dependencies
 }
 
 Update-Byee

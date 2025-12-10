@@ -99,6 +99,62 @@ function Enable-FoldersInClient {
     }
 }
 
+function Check-Dependencies {
+    Write-Info "Checking dependencies..."
+    
+    if (Test-Command "openssl") { return }
+    
+    Write-Warn "openssl not found (required for encryption)"
+    
+    # Check for winget
+    if (Test-Command "winget") {
+        Write-Host ""
+        Write-Host "openssl is missing. Would you like to install it?" -ForegroundColor Yellow
+        Write-Host "Option 1: Git for Windows (Recommended - includes bash, curl, openssl)"
+        Write-Host "Option 2: OpenSSL (Minimal)"
+        Write-Host "Option 3: Skip (You must install openssl manually)"
+        Write-Host ""
+        
+        $choice = Read-Host "Select option [1/2/3] (default: 1)"
+        if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }
+        
+        if ($choice -eq "1") {
+            Write-Info "Installing Git for Windows via winget..."
+            winget install --id Git.Git -e --source winget
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Git for Windows installed"
+                Write-Info "Refreshed environment variables"
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+                return
+            }
+        } elseif ($choice -eq "2") {
+            Write-Info "Installing OpenSSL via winget..."
+            winget install --id ShiningLight.OpenSSL -e --source winget
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "OpenSSL installed"
+                Write-Info "Refreshed environment variables"
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+                return
+            }
+        } elseif ($choice -eq "3") {
+            Write-Info "Skipping installation"
+        }
+    } else {
+        Write-Warn "winget not found, cannot auto-install dependencies"
+    }
+    
+    Write-Host ""
+    Write-Err "Encryption features will NOT work until you install OpenSSL."
+    Write-Host "Please install Git for Windows: https://gitforwindows.org/" -ForegroundColor Yellow
+    Write-Host "Or OpenSSL: https://slproweb.com/products/Win32OpenSSL.html" -ForegroundColor Yellow
+    Write-Host ""
+    
+    $proceed = Read-Host "Proceed with limited installation? [y/N]"
+    if ($proceed -ne "y" -and $proceed -ne "Y") {
+        exit 1
+    }
+}
+
 function Main {
     Write-Host ""
     Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -108,6 +164,9 @@ function Main {
     Write-Host ""
     
     Write-Info "Detected OS: Windows"
+    
+    # Check dependencies
+    Check-Dependencies
     
     # Check for existing installation
     $existingClient = Join-Path $BYEE_BIN_DIR "byee.ps1"
