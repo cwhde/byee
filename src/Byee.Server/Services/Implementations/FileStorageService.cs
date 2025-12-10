@@ -31,7 +31,7 @@ public class FileStorageService : IFileStorageService
         Directory.CreateDirectory(Path.Combine(_storagePath, "meta"));
     }
 
-    public async Task<string> StoreFileAsync(Stream fileStream, string fileName, long originalSize, bool isFolder = false, CancellationToken ct = default)
+    public async Task<string> StoreFileAsync(Stream fileStream, string fileName, long originalSize, bool isFolder = false, bool isFilenameEncrypted = false, CancellationToken ct = default)
     {
         // Generate unique ID
         string id;
@@ -62,7 +62,8 @@ public class FileStorageService : IFileStorageService
                 EncryptedSize = encryptedSize,
                 UploadedAt = DateTime.UtcNow,
                 Claimed = false,
-                IsFolder = isFolder
+                IsFolder = isFolder,
+                IsFilenameEncrypted = isFilenameEncrypted
             };
 
             await WriteMetadataAsync(id, metadata, ct);

@@ -39,6 +39,7 @@ public class UploadController : ControllerBase
         var fileName = Request.Headers["X-Byee-Filename"].FirstOrDefault() ?? "file";
         var sizeHeader = Request.Headers["X-Byee-Size"].FirstOrDefault();
         var isFolderHeader = Request.Headers["X-Byee-IsFolder"].FirstOrDefault();
+        var isFilenameEncryptedHeader = Request.Headers["X-Byee-Filename-Encrypted"].FirstOrDefault();
         
         if (!long.TryParse(sizeHeader, out var originalSize))
         {
@@ -46,13 +47,14 @@ public class UploadController : ControllerBase
         }
 
         var isFolder = string.Equals(isFolderHeader, "true", StringComparison.OrdinalIgnoreCase);
+        var isFilenameEncrypted = string.Equals(isFilenameEncryptedHeader, "true", StringComparison.OrdinalIgnoreCase);
 
-        _logger.LogInformation("Upload started: {FileName} ({Size} bytes, isFolder: {IsFolder})", fileName, originalSize, isFolder);
+        _logger.LogInformation("Upload started: {FileName} ({Size} bytes, isFolder: {IsFolder}, EncryptedName: {EncryptedName})", fileName, originalSize, isFolder, isFilenameEncrypted);
 
         try
         {
             // Stream directly from request body to storage
-            var id = await _storage.StoreFileAsync(Request.Body, fileName, originalSize, isFolder, ct);
+            var id = await _storage.StoreFileAsync(Request.Body, fileName, originalSize, isFolder, isFilenameEncrypted, ct);
 
             var publicUrl = _options.PublicUrl.TrimEnd('/');
             var command = $"byee receive {id} <KEY>";

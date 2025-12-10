@@ -78,7 +78,8 @@ public class DownloadController : ControllerBase
             Size = metadata.Size,
             SizeHuman = FormatSize(metadata.Size),
             ClaimToken = claimToken,
-            IsFolder = metadata.IsFolder
+            IsFolder = metadata.IsFolder,
+            IsFilenameEncrypted = metadata.IsFilenameEncrypted
         });
     }
 

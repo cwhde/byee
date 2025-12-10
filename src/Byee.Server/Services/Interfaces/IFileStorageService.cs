@@ -10,7 +10,7 @@ public interface IFileStorageService
     /// <summary>
     /// Store a file stream and return a unique ID
     /// </summary>
-    Task<string> StoreFileAsync(Stream fileStream, string fileName, long originalSize, bool isFolder = false, CancellationToken ct = default);
+    Task<string> StoreFileAsync(Stream fileStream, string fileName, long originalSize, bool isFolder = false, bool isFilenameEncrypted = false, CancellationToken ct = default);
 
     /// <summary>
     /// Get a file stream for download

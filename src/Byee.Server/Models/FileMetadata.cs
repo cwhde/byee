@@ -31,4 +31,7 @@ public class FileMetadata
 
     [JsonPropertyName("is_folder")]
     public bool IsFolder { get; set; }
+
+    [JsonPropertyName("is_filename_encrypted")]
+    public bool IsFilenameEncrypted { get; set; }
 }
