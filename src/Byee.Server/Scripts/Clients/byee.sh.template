@@ -102,7 +102,7 @@ send_file_encrypted() {
     filesize="$3"
     
     # Generate age key pair
-    tmp_key=$(mktemp)
+    tmp_key=$(mktemp -u)  # -u creates a name without creating the file
     age-keygen -o "$tmp_key" 2>/dev/null
     # Public key is stored as a comment in the key file
     pubkey=$(grep "# public key:" "$tmp_key" | sed 's/.*# public key: //')
