@@ -218,6 +218,18 @@ send_folder_encrypted() {
     
     info "Generated encryption key"
     
+    # Handle folder name encryption
+    upload_filename="${foldername}.zip"
+    filename_encrypted_header="false"
+    if [ "$BYEE_ENCRYPT_FILENAME" = "true" ]; then
+        info "Encrypting folder name..."
+        # Encrypt folder name (base64 encoded for header safety)
+        upload_filename=$(echo -n "${foldername}.zip" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A)
+        filename_encrypted_header="true"
+    fi
+    
+    info "Zipping, encrypting and uploading..."
+    
     # Get original folder size for header
     foldersize=$(get_folder_size "$folder")
     
@@ -227,10 +239,11 @@ send_folder_encrypted() {
         openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:${passphrase}" | \
         curl -s --fail -X POST "${server_url}/upload" \
             -H "Content-Type: application/octet-stream" \
-            -H "X-Byee-Filename: ${foldername}.zip" \
+            -H "X-Byee-Filename: ${upload_filename}" \
             -H "X-Byee-Size: $foldersize" \
             -H "X-Byee-Encrypted: true" \
             -H "X-Byee-IsFolder: true" \
+            -H "X-Byee-Filename-Encrypted: $filename_encrypted_header" \
             --data-binary @- 2>&1)
     curl_exit=$?
     cd - >/dev/null
@@ -478,14 +491,22 @@ receive_file() {
         
         # If we have the key, we can show the real name
         if [ -n "$secret_key" ]; then
-             # Decrypt filename
-             real_filename=$(echo -n "$filename" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$secret_key" -a -A 2>/dev/null)
-             if [ -n "$real_filename" ]; then
-                 printf "${CYAN} Real Name: ${BOLD}%s${NC}\n" "$real_filename"
-                 filename="$real_filename"
+             # Decrypt filename using temp files to avoid pipeline encoding issues
+             tmp_fn_in=$(mktemp)
+             tmp_fn_out=$(mktemp)
+             printf '%s' "$filename" > "$tmp_fn_in"
+             if openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$secret_key" -a -A -in "$tmp_fn_in" -out "$tmp_fn_out" 2>/dev/null; then
+                 real_filename=$(cat "$tmp_fn_out")
+                 if [ -n "$real_filename" ]; then
+                     printf "${CYAN} Real Name: ${BOLD}%s${NC}\n" "$real_filename"
+                     filename="$real_filename"
+                 else
+                     warn "Failed to decrypt filename with provided key"
+                 fi
              else
                  warn "Failed to decrypt filename with provided key"
              fi
+             rm -f "$tmp_fn_in" "$tmp_fn_out"
         fi
     fi
 

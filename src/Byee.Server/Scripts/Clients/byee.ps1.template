@@ -140,6 +140,26 @@ function Send-FolderEncrypted($FolderPath, $foldername) {
         $passphrase = New-Passphrase -WordCount 4
         
         Write-Info "Generated encryption key"
+        
+        # Handle folder name encryption
+        $uploadFilename = "$foldername.zip"
+        if ($script:EncryptFilename) {
+            Write-Info "Encrypting folder name..."
+            $tempIn = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).txt"
+            $tempOut = Join-Path ([System.IO.Path]::GetTempPath()) "byee-fn-$([guid]::NewGuid().ToString('N')).b64"
+            try {
+                [System.IO.File]::WriteAllText($tempIn, "$foldername.zip")
+                & openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass "pass:$passphrase" -a -A -in $tempIn -out $tempOut
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Err "Folder name encryption failed"
+                }
+                $uploadFilename = [System.IO.File]::ReadAllText($tempOut)
+            } finally {
+                if (Test-Path $tempIn) { Remove-Item $tempIn -Force -ErrorAction SilentlyContinue }
+                if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        
         Write-Info "Zipping, encrypting and uploading..."
         
         # Zip folder
@@ -156,10 +176,11 @@ function Send-FolderEncrypted($FolderPath, $foldername) {
         
         # Upload
         $headers = @{
-            "X-Byee-Filename" = "$foldername.zip"
+            "X-Byee-Filename" = $uploadFilename
             "X-Byee-Size" = $foldersize.ToString()
             "X-Byee-Encrypted" = "true"
             "X-Byee-IsFolder" = "true"
+            "X-Byee-Filename-Encrypted" = "$script:EncryptFilename"
         }
         
         try {
