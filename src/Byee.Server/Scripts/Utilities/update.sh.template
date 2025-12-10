@@ -37,6 +37,81 @@ detect_os() {
     esac
 }
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ LEGACY CODE - REMOVE AFTER 2025-06-01                                        ║
+# ║                                                                              ║
+# ║ This section detects and offers to remove 'age' encryption tool which was   ║
+# ║ installed by older versions of byee. Modern byee uses openssl instead.      ║
+# ║                                                                              ║
+# ║ FUTURE MAINTAINERS: Delete the offer_age_removal() function and its call    ║
+# ║ in update_byee() after the deprecation date. Users who haven't updated by   ║
+# ║ then can manually uninstall age if desired.                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+offer_age_removal() {
+    # Check if age is installed
+    if ! command -v age >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    printf "\n"
+    warn "Legacy 'age' encryption tool detected"
+    info "Byee no longer uses 'age' - it now uses openssl (already on your system)"
+    printf "\n"
+    
+    # Try to get interactive input
+    if [ -t 0 ]; then
+        tty_input="/dev/stdin"
+    elif [ -e /dev/tty ]; then
+        tty_input="/dev/tty"
+    else
+        # Non-interactive, skip removal prompt
+        info "Run 'byee --uninstall --deps age' to remove it later if desired"
+        return 0
+    fi
+    
+    printf "Would you like to remove 'age'? [y/N]: "
+    read remove_age < "$tty_input"
+    
+    if [ "$remove_age" = "y" ] || [ "$remove_age" = "Y" ]; then
+        info "Attempting to remove age..."
+        
+        # Check if age is in our bin dir (we installed it)
+        if [ -f "$BYEE_BIN_DIR/age" ]; then
+            rm -f "$BYEE_BIN_DIR/age" "$BYEE_BIN_DIR/age-keygen"
+            success "Removed age from $BYEE_BIN_DIR"
+        else
+            # It was installed via package manager
+            local pkg_manager=""
+            if command -v apk >/dev/null 2>&1; then pkg_manager="apk"
+            elif command -v apt-get >/dev/null 2>&1; then pkg_manager="apt"
+            elif command -v dnf >/dev/null 2>&1; then pkg_manager="dnf"
+            elif command -v yum >/dev/null 2>&1; then pkg_manager="yum"
+            elif command -v pacman >/dev/null 2>&1; then pkg_manager="pacman"
+            elif command -v brew >/dev/null 2>&1; then pkg_manager="brew"
+            fi
+            
+            case "$pkg_manager" in
+                apk) sudo apk del age 2>/dev/null || apk del age 2>/dev/null || warn "Could not remove via apk" ;;
+                apt) sudo apt-get remove -y age 2>/dev/null || warn "Could not remove via apt" ;;
+                dnf|yum) sudo $pkg_manager remove -y age 2>/dev/null || warn "Could not remove via $pkg_manager" ;;
+                pacman) sudo pacman -R --noconfirm age 2>/dev/null || warn "Could not remove via pacman" ;;
+                brew) brew uninstall age 2>/dev/null || warn "Could not remove via brew" ;;
+                *) warn "Could not determine how age was installed. Remove manually if desired." ;;
+            esac
+            
+            if ! command -v age >/dev/null 2>&1; then
+                success "Age removed successfully"
+            fi
+        fi
+    else
+        info "Keeping age installed. You can remove it later with your package manager."
+    fi
+}
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ END LEGACY CODE                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+
 update_byee() {
     info "Checking for updates..."
     
@@ -76,6 +151,9 @@ update_byee() {
         printf "${GREEN}========================================${NC}\n"
         printf "\n"
         printf "Updated from ${YELLOW}%s${NC} to ${GREEN}%s${NC}\n" "$current_version" "$new_version"
+        
+        # LEGACY: Check for and offer to remove age (see comment above offer_age_removal)
+        offer_age_removal
     else
         rm -f "$tmp_file"
         error "Failed to download update"

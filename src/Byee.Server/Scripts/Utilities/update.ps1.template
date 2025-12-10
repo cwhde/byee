@@ -12,6 +12,75 @@ function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Err($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ LEGACY CODE - REMOVE AFTER 2025-06-01                                        ║
+# ║                                                                              ║
+# ║ This section detects and offers to remove 'age' encryption tool which was   ║
+# ║ installed by older versions of byee. Modern byee uses openssl instead.      ║
+# ║                                                                              ║
+# ║ FUTURE MAINTAINERS: Delete the Offer-AgeRemoval function and its call       ║
+# ║ in Update-Byee after the deprecation date. Users who haven't updated by     ║
+# ║ then can manually uninstall age if desired.                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+function Offer-AgeRemoval {
+    # Check if age is installed
+    try {
+        Get-Command "age" -ErrorAction Stop | Out-Null
+    } catch {
+        return  # age not installed, nothing to do
+    }
+    
+    Write-Host ""
+    Write-Warn "Legacy 'age' encryption tool detected"
+    Write-Info "Byee no longer uses 'age' - it now uses openssl"
+    Write-Host ""
+    
+    try {
+        $remove = Read-Host "Would you like to remove 'age'? [y/N]"
+        
+        if ($remove -eq "y" -or $remove -eq "Y") {
+            Write-Info "Attempting to remove age..."
+            
+            # Check if age is in our bin dir (we installed it)
+            $agePath = Join-Path $BYEE_BIN_DIR "age.exe"
+            if (Test-Path $agePath) {
+                Remove-Item (Join-Path $BYEE_BIN_DIR "age.exe") -Force -ErrorAction SilentlyContinue
+                Remove-Item (Join-Path $BYEE_BIN_DIR "age-keygen.exe") -Force -ErrorAction SilentlyContinue
+                Write-Success "Removed age from $BYEE_BIN_DIR"
+            } else {
+                # Try winget
+                if (Get-Command "winget" -ErrorAction SilentlyContinue) {
+                    try {
+                        winget uninstall --id FiloSottile.age -e --silent 2>$null
+                        Write-Success "Age removed via winget"
+                        return
+                    } catch {}
+                }
+                
+                # Try scoop
+                if (Get-Command "scoop" -ErrorAction SilentlyContinue) {
+                    try {
+                        scoop uninstall age 2>$null
+                        Write-Success "Age removed via scoop"
+                        return
+                    } catch {}
+                }
+                
+                Write-Warn "Could not determine how age was installed. Remove manually if desired."
+            }
+        } else {
+            Write-Info "Keeping age installed. You can remove it later manually."
+        }
+    } catch {
+        # Non-interactive environment, skip
+        Write-Info "Run package manager to remove age later if desired"
+    }
+}
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║ END LEGACY CODE                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+
 function Update-Byee {
     Write-Info "Checking for updates..."
     
@@ -53,6 +122,9 @@ function Update-Byee {
         Write-Host "========================================" -ForegroundColor Green
         Write-Host ""
         Write-Host "Updated from $currentVersion to $newVersion"
+        
+        # LEGACY: Check for and offer to remove age (see comment above Offer-AgeRemoval)
+        Offer-AgeRemoval
     } catch {
         Write-Err "Failed to download update: $($_.Exception.Message)"
     }
