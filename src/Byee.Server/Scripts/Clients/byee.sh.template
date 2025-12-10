@@ -3,8 +3,9 @@
 # Version: {{BYEE_VERSION}}
 # 
 # Usage:
-#   byee ./file.zip              Send a file
-#   byee receive <id> <key>      Receive a file
+#   byee ./file.zip                     Send a file (encrypted)
+#   byee --no-encrypt ./file.zip        Send without encryption
+#   byee receive <id> [key]             Receive a file
 
 set -e
 
@@ -43,18 +44,40 @@ format_size() {
     fi
 }
 
-# Check dependencies
-check_deps() {
-    for cmd in curl age jq; do
+# Shorten the age secret key for display (remove AGE-SECRET-KEY- prefix)
+shorten_key() {
+    echo "$1" | sed 's/^AGE-SECRET-KEY-//'
+}
+
+# Expand shortened key back to full format
+expand_key() {
+    local key="$1"
+    if echo "$key" | grep -q "^AGE-SECRET-KEY-"; then
+        echo "$key"
+    else
+        echo "AGE-SECRET-KEY-$key"
+    fi
+}
+
+# Check dependencies (encryption-related deps only checked when needed)
+check_deps_basic() {
+    for cmd in curl jq; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             error "$cmd is required but not installed. Run the installer: curl -fsSL $BYEE_URL | sh"
         fi
     done
 }
 
-# Send a file
+check_deps_encryption() {
+    if ! command -v age >/dev/null 2>&1; then
+        error "age is required for encryption. Run the installer: curl -fsSL $BYEE_URL | sh"
+    fi
+}
+
+# Send a file (with optional encryption)
 send_file() {
     local file="$1"
+    local encrypt="$2"  # "true" or "false"
     
     if [ ! -f "$file" ]; then
         error "File not found: $file"
@@ -64,7 +87,21 @@ send_file() {
     local filesize=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
     local filesize_human=$(format_size "$filesize")
     
-    info "Preparing to send: ${BOLD}$filename${NC} ($filesize_human)"
+    if [ "$encrypt" = "true" ]; then
+        info "Preparing to send (encrypted): ${BOLD}$filename${NC} ($filesize_human)"
+        check_deps_encryption
+        send_file_encrypted "$file" "$filename" "$filesize"
+    else
+        info "Preparing to send (unencrypted): ${BOLD}$filename${NC} ($filesize_human)"
+        send_file_raw "$file" "$filename" "$filesize"
+    fi
+}
+
+# Send file with encryption
+send_file_encrypted() {
+    local file="$1"
+    local filename="$2"
+    local filesize="$3"
     
     # Generate age key pair for this transfer
     local tmp_key=$(mktemp)
@@ -73,6 +110,7 @@ send_file() {
     age-keygen -o "$tmp_key" 2>/dev/null
     pubkey=$(grep "public key:" "$tmp_key" | cut -d: -f2 | tr -d ' ')
     local secret_key=$(grep "AGE-SECRET-KEY" "$tmp_key")
+    local short_key=$(shorten_key "$secret_key")
     
     info "Generated encryption key"
     
@@ -90,6 +128,7 @@ send_file() {
                 -H "Content-Type: application/octet-stream" \
                 -H "X-Byee-Filename: $filename" \
                 -H "X-Byee-Size: $filesize" \
+                -H "X-Byee-Encrypted: true" \
                 -H "Transfer-Encoding: chunked" \
                 --data-binary @- \
                 -w "\n%{http_code}")
@@ -102,6 +141,7 @@ send_file() {
                 -H "Content-Type: application/octet-stream" \
                 -H "X-Byee-Filename: $filename" \
                 -H "X-Byee-Size: $filesize" \
+                -H "X-Byee-Encrypted: true" \
                 -H "Transfer-Encoding: chunked" \
                 --data-binary @- \
                 -w "\n%{http_code}")
@@ -132,7 +172,65 @@ send_file() {
     printf "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}\n"
     printf "\n"
     printf "Share this command with the recipient:\n\n"
-    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$secret_key"
+    printf "  ${CYAN}${BOLD}byee receive %s %s${NC}\n\n" "$file_id" "$short_key"
+    printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
+}
+
+# Send file without encryption
+send_file_raw() {
+    local file="$1"
+    local filename="$2"
+    local filesize="$3"
+    
+    info "Uploading..."
+    
+    local response
+    local http_code
+    
+    if command -v pv >/dev/null 2>&1; then
+        response=$(pv -s "$filesize" -N "Uploading" -f "$file" 2>/dev/tty | \
+            curl -sf -X POST "${BYEE_URL}/upload" \
+                -H "Content-Type: application/octet-stream" \
+                -H "X-Byee-Filename: $filename" \
+                -H "X-Byee-Size: $filesize" \
+                -H "X-Byee-Encrypted: false" \
+                -H "Transfer-Encoding: chunked" \
+                --data-binary @- \
+                -w "\n%{http_code}")
+    else
+        info "Uploading (install pv for progress bar)..."
+        response=$(cat "$file" | \
+            curl -sf -X POST "${BYEE_URL}/upload" \
+                -H "Content-Type: application/octet-stream" \
+                -H "X-Byee-Filename: $filename" \
+                -H "X-Byee-Size: $filesize" \
+                -H "X-Byee-Encrypted: false" \
+                -H "Transfer-Encoding: chunked" \
+                --data-binary @- \
+                -w "\n%{http_code}")
+    fi
+    
+    # Parse response
+    http_code=$(echo "$response" | tail -n1)
+    response=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" != "200" ]; then
+        error "Upload failed (HTTP $http_code): $response"
+    fi
+    
+    local file_id=$(echo "$response" | jq -r '.id // empty')
+    
+    if [ -z "$file_id" ]; then
+        error "Failed to get file ID from server response"
+    fi
+    
+    printf "\n"
+    printf "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}\n"
+    printf "${GREEN}║${NC} ${BOLD}Upload complete!${NC}                                           ${GREEN}║${NC}\n"
+    printf "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}\n"
+    printf "\n"
+    printf "Share this command with the recipient:\n\n"
+    printf "  ${CYAN}${BOLD}byee receive %s${NC}\n\n" "$file_id"
     printf "${YELLOW}Note: This file can only be downloaded ONCE!${NC}\n"
 }
 
@@ -141,8 +239,8 @@ receive_file() {
     local file_id="$1"
     local secret_key="$2"
     
-    if [ -z "$file_id" ] || [ -z "$secret_key" ]; then
-        error "Usage: byee receive <id> <key>"
+    if [ -z "$file_id" ]; then
+        error "Usage: byee receive <id> [key]"
     fi
     
     info "Requesting file info..."
@@ -176,6 +274,11 @@ receive_file() {
     printf "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}\n"
     printf "${CYAN}║${NC} File: ${BOLD}%-50s${NC} ${CYAN}║${NC}\n" "$filename"
     printf "${CYAN}║${NC} Size: %-52s ${CYAN}║${NC}\n" "$filesize_human"
+    if [ -n "$secret_key" ]; then
+        printf "${CYAN}║${NC} Encrypted: Yes                                             ${CYAN}║${NC}\n"
+    else
+        printf "${CYAN}║${NC} Encrypted: No                                              ${CYAN}║${NC}\n"
+    fi
     printf "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}\n"
     printf "\n"
     
@@ -210,29 +313,49 @@ receive_file() {
         fi
     fi
     
-    info "Downloading and decrypting..."
-    
-    # Create temp file for secret key (age needs file input for identity)
-    local tmp_key=$(mktemp)
-    echo "$secret_key" > "$tmp_key"
-    
-    # Stream: server -> curl -> pv (progress) -> age decrypt -> file
-    if command -v pv >/dev/null 2>&1; then
-        # With progress bar using pv
-        curl -sf "${BYEE_URL}/download/${file_id}" \
-            -H "X-Byee-Claim-Token: $claim_token" | \
-            pv -s "$filesize" -N "Downloading & Decrypting" -f 2>/dev/tty | \
-            age -d -i "$tmp_key" > "$output_file"
+    # Download with or without decryption
+    if [ -n "$secret_key" ]; then
+        check_deps_encryption
+        info "Downloading and decrypting..."
+        
+        # Expand key if shortened
+        local full_key=$(expand_key "$secret_key")
+        
+        # Create temp file for secret key (age needs file input for identity)
+        local tmp_key=$(mktemp)
+        echo "$full_key" > "$tmp_key"
+        
+        # Stream: server -> curl -> pv (progress) -> age decrypt -> file
+        if command -v pv >/dev/null 2>&1; then
+            curl -sf "${BYEE_URL}/download/${file_id}" \
+                -H "X-Byee-Claim-Token: $claim_token" | \
+                pv -s "$filesize" -N "Downloading & Decrypting" -f 2>/dev/tty | \
+                age -d -i "$tmp_key" > "$output_file"
+        else
+            info "Downloading (install pv for progress bar)..."
+            curl -sf "${BYEE_URL}/download/${file_id}" \
+                -H "X-Byee-Claim-Token: $claim_token" | \
+                age -d -i "$tmp_key" > "$output_file"
+        fi
+        
+        local exit_code=$?
+        rm -f "$tmp_key"
     else
-        # Without pv - simple progress message
-        info "Downloading (install pv for progress bar)..."
-        curl -sf "${BYEE_URL}/download/${file_id}" \
-            -H "X-Byee-Claim-Token: $claim_token" | \
-            age -d -i "$tmp_key" > "$output_file"
+        info "Downloading..."
+        
+        # Stream: server -> curl -> pv (progress) -> file
+        if command -v pv >/dev/null 2>&1; then
+            curl -sf "${BYEE_URL}/download/${file_id}" \
+                -H "X-Byee-Claim-Token: $claim_token" | \
+                pv -s "$filesize" -N "Downloading" -f 2>/dev/tty > "$output_file"
+        else
+            info "Downloading (install pv for progress bar)..."
+            curl -sf "${BYEE_URL}/download/${file_id}" \
+                -H "X-Byee-Claim-Token: $claim_token" -o "$output_file"
+        fi
+        
+        local exit_code=$?
     fi
-    
-    local exit_code=$?
-    rm -f "$tmp_key"
     
     if [ $exit_code -ne 0 ]; then
         rm -f "$output_file"
@@ -258,19 +381,20 @@ receive_file() {
 
 # Show usage
 usage() {
-    printf "Byee - Secure one-time file transfer\n"
+    printf "Byee - One-time file transfer\n"
     printf "Server: %s\n" "$BYEE_URL"
     printf "Version: %s\n\n" "$BYEE_VERSION"
     printf "Usage:\n"
-    printf "  byee <file>                Send a file\n"
-    printf "  byee receive <id> <key>    Receive a file\n"
-    printf "  byee --help                Show this help\n"
-    printf "  byee --version             Show version\n"
+    printf "  byee <file>                     Send a file (encrypted by default)\n"
+    printf "  byee --no-encrypt <file>        Send a file without encryption\n"
+    printf "  byee receive <id> [key]         Receive a file\n"
+    printf "  byee --help                     Show this help\n"
+    printf "  byee --version                  Show version\n"
 }
 
 # Main
 main() {
-    check_deps
+    check_deps_basic
     
     case "${1:-}" in
         ""|--help|-h)
@@ -284,9 +408,13 @@ main() {
             shift
             receive_file "$@"
             ;;
+        --no-encrypt|-n)
+            shift
+            send_file "$1" "false"
+            ;;
         *)
-            # Assume it's a file to send
-            send_file "$1"
+            # Assume it's a file to send (encrypted by default)
+            send_file "$1" "true"
             ;;
     esac
 }
