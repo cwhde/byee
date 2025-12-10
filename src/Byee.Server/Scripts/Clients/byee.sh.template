@@ -508,31 +508,32 @@ receive_file() {
     # Handle folder extraction
     if [ "$is_folder" = "true" ]; then
         if [ "$BYEE_FOLDERS_ENABLED" = "true" ] && command -v unzip >/dev/null 2>&1; then
-            printf "\n"
-            printf "This is a folder archive. Extract it? [Y/n]: "
-            read extract_confirm
+            # Auto-extract when folder support is enabled
+            info "Extracting folder archive..."
+            unzip -q -o "$output_file"
+            rm -f "$output_file"
             
-            if [ "$extract_confirm" != "n" ] && [ "$extract_confirm" != "N" ]; then
-                # Get folder name (filename without .zip)
-                folder_name="${output_file%.zip}"
-                if [ "$folder_name" = "$output_file" ]; then
-                    folder_name="${output_file}_extracted"
-                fi
-                
-                info "Extracting to $folder_name..."
-                unzip -q -o "$output_file" -d "$folder_name"
-                rm -f "$output_file"
-                
-                printf "\n"
-                printf "${GREEN}========================================${NC}\n"
-                printf "${GREEN} Download & Extract complete!${NC}\n"
-                printf "${GREEN}========================================${NC}\n"
-                printf "\n"
-                printf "Extracted to: ${BOLD}%s${NC}\n" "$folder_name"
-                return
+            # Get folder name (filename without .zip) for display
+            folder_name="${output_file%.zip}"
+            if [ "$folder_name" = "$output_file" ]; then
+                folder_name="extracted files"
             fi
+            
+            printf "\n"
+            printf "${GREEN}========================================${NC}\n"
+            printf "${GREEN} Download & Extract complete!${NC}\n"
+            printf "${GREEN}========================================${NC}\n"
+            printf "\n"
+            printf "Extracted: ${BOLD}%s${NC}\n" "$folder_name"
+            return
         else
-            warn "This is a folder archive. Enable folder support to auto-extract: byee --enable-folders"
+            # Folder support not enabled - warn and download as zip
+            printf "\n"
+            warn "This file was uploaded as a folder."
+            warn "Your client doesn't have folder support enabled."
+            printf "${YELLOW}[WARN]${NC} To enable: ${CYAN}byee --enable-folders${NC}\n"
+            printf "\n"
+            printf "Downloading as zip archive instead...\n"
         fi
     fi
     

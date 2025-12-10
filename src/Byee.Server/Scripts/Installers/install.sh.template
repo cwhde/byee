@@ -241,8 +241,15 @@ install_zip_tools() {
 
 # Ask about folder support
 ask_folder_support() {
-    # Skip if not interactive
-    if [ ! -t 0 ]; then
+    # Skip if not interactive - try /dev/tty for piped installs
+    if [ -t 0 ]; then
+        # stdin is a terminal
+        tty_input="/dev/stdin"
+    elif [ -e /dev/tty ]; then
+        # stdin is piped but we can use /dev/tty
+        tty_input="/dev/tty"
+    else
+        # No interactive input available
         return 0
     fi
     
@@ -252,7 +259,7 @@ ask_folder_support() {
     printf "Requires: zip/unzip tools, uses additional disk space during transfers.\n"
     printf "\n"
     printf "Enable folder support? [y/N]: "
-    read enable_folders
+    read enable_folders < "$tty_input"
     
     if [ "$enable_folders" = "y" ] || [ "$enable_folders" = "Y" ]; then
         INSTALL_FOLDERS="true"

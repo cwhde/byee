@@ -448,29 +448,29 @@ function Receive-File($FileId, $SecretKey) {
     
     # Handle folder extraction
     if ($isFolder -and $BYEE_FOLDERS_ENABLED) {
-        Write-Host ""
-        $extractConfirm = Read-Host "This is a folder archive. Extract it? [Y/n]"
+        # Auto-extract when folder support is enabled
+        $folderName = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
         
-        if ($extractConfirm -ne "n" -and $extractConfirm -ne "N") {
-            $folderName = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
-            if ($folderName -eq $outputFile) {
-                $folderName = "${outputFile}_extracted"
-            }
-            
-            Write-Info "Extracting to $folderName..."
-            Expand-Archive -Path $outputFile -DestinationPath $folderName -Force
-            Remove-Item $outputFile -Force
-            
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host " Download & Extract complete!" -ForegroundColor Green
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "Extracted to: $folderName"
-            return
-        }
+        Write-Info "Extracting folder archive..."
+        Expand-Archive -Path $outputFile -DestinationPath "." -Force
+        Remove-Item $outputFile -Force
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Download & Extract complete!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Extracted: $folderName"
+        return
     } elseif ($isFolder -and -not $BYEE_FOLDERS_ENABLED) {
-        Write-Warn "This is a folder archive. Enable folder support to auto-extract: byee --enable-folders"
+        # Folder support not enabled - warn and download as zip
+        Write-Host ""
+        Write-Warn "This file was uploaded as a folder."
+        Write-Warn "Your client doesn't have folder support enabled."
+        Write-Host "[WARN] To enable: " -ForegroundColor Yellow -NoNewline
+        Write-Host "byee --enable-folders" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Downloading as zip archive instead..."
     }
     
     Write-Host ""

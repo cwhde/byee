@@ -120,8 +120,8 @@ function Add-ToPath {
 }
 
 function Request-FolderSupport {
-    # Check if running interactively
-    if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+    # Check if running interactively - try to prompt even in piped scenarios
+    try {
         Write-Host ""
         Write-Host "Would you like to enable folder support?" -ForegroundColor Yellow
         Write-Host "This allows sending entire folders (they'll be zipped automatically)."
@@ -132,6 +132,8 @@ function Request-FolderSupport {
         if ($response -eq "y" -or $response -eq "Y") {
             $script:InstallFolders = $true
         }
+    } catch {
+        # Non-interactive environment, skip prompt
     }
 }
 
