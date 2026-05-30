@@ -4,7 +4,20 @@
 set -e
 
 BYEE_URL="{{BYEE_URL}}"
-BYEE_BIN_DIR="${HOME}/.local/bin"
+
+# Detect user privilege level
+if [ -x /usr/bin/id ] || [ -x /bin/id ] || command -v id >/dev/null 2>&1; then
+    current_uid=$(id -u)
+else
+    current_uid=1 # Default to non-root if id command is missing
+fi
+
+# Set installation directory based on privilege level
+if [ "$current_uid" -eq 0 ]; then
+    BYEE_BIN_DIR="/usr/local/bin"
+else
+    BYEE_BIN_DIR="${HOME}/.local/bin"
+fi
 
 # Colors
 if [ -t 1 ]; then
@@ -36,6 +49,57 @@ detect_os() {
         *)          echo "unknown";;
     esac
 }
+
+# Detect package manager
+detect_pkg_manager() {
+    if command -v apk >/dev/null 2>&1; then
+        echo "apk"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v brew >/dev/null 2>&1; then
+        echo "brew"
+    else
+        echo "unknown"
+    fi
+}
+
+# Ensure sudo is installed, or install it if running as root
+ensure_sudo() {
+    if command -v sudo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # sudo is not installed. Check if we are root
+    if [ "$current_uid" -eq 0 ]; then
+        info "sudo is not installed. Attempting to install sudo as root..."
+        local pkg_manager=$(detect_pkg_manager)
+        case "$pkg_manager" in
+            apk) apk add --no-cache sudo ;;
+            apt) apt-get update && apt-get install -y sudo ;;
+            dnf|yum) $pkg_manager install -y sudo ;;
+            pacman) pacman -Sy --noconfirm sudo ;;
+            *) 
+                warn "Unrecognized package manager. Creating a sudo function wrapper..."
+                ;;
+        esac
+    else
+        error "sudo is required but not installed, and you are not running as root. Please install sudo or run this script as root."
+    fi
+
+    # Fallback wrapper if sudo installation failed or was skipped
+    if ! command -v sudo >/dev/null 2>&1; then
+        sudo() {
+            "$@"
+        }
+    fi
+}
+
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║ LEGACY CODE - REMOVE AFTER 2025-06-01                                        ║
@@ -113,6 +177,7 @@ offer_age_removal() {
 
 
 update_byee() {
+    ensure_sudo
     info "Checking for updates..."
     
     local os=$(detect_os)

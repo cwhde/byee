@@ -4,7 +4,20 @@
 set -e
 
 BYEE_URL="{{BYEE_URL}}"
-BYEE_BIN_DIR="${HOME}/.local/bin"
+
+# Detect user privilege level
+if [ -x /usr/bin/id ] || [ -x /bin/id ] || command -v id >/dev/null 2>&1; then
+    current_uid=$(id -u)
+else
+    current_uid=1 # Default to non-root if id command is missing
+fi
+
+# Set installation directory based on privilege level
+if [ "$current_uid" -eq 0 ]; then
+    BYEE_BIN_DIR="/usr/local/bin"
+else
+    BYEE_BIN_DIR="${HOME}/.local/bin"
+fi
 
 # Colors
 if [ -t 1 ]; then
@@ -55,6 +68,38 @@ detect_pkg_manager() {
         echo "unknown"
     fi
 }
+
+# Ensure sudo is installed, or install it if running as root
+ensure_sudo() {
+    if command -v sudo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # sudo is not installed. Check if we are root
+    if [ "$current_uid" -eq 0 ]; then
+        info "sudo is not installed. Attempting to install sudo as root..."
+        local pkg_manager=$(detect_pkg_manager)
+        case "$pkg_manager" in
+            apk) apk add --no-cache sudo ;;
+            apt) apt-get update && apt-get install -y sudo ;;
+            dnf|yum) $pkg_manager install -y sudo ;;
+            pacman) pacman -Sy --noconfirm sudo ;;
+            *) 
+                warn "Unrecognized package manager. Creating a sudo function wrapper..."
+                ;;
+        esac
+    else
+        error "sudo is required but not installed, and you are not running as root. Please install sudo or run this script as root."
+    fi
+
+    # Fallback wrapper if sudo installation failed or was skipped
+    if ! command -v sudo >/dev/null 2>&1; then
+        sudo() {
+            "$@"
+        }
+    fi
+}
+
 
 # Check if folder support is already enabled
 check_folders_enabled() {
@@ -130,6 +175,7 @@ enable_folders_in_client() {
 }
 
 main() {
+    ensure_sudo
     printf "\n"
     printf "${BLUE}╔════════════════════════════════════════╗${NC}\n"
     printf "${BLUE}║${NC}     Byee - Enable Folder Support        ${BLUE}║${NC}\n"
