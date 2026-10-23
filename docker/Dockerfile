@@ -18,7 +18,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
 WORKDIR /app
 
 # Install ca-certificates for HTTPS and curl for healthcheck
-RUN apk add --no-cache ca-certificates tzdata curl
+RUN apk update && apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata curl && rm -f /etc/ssl/certs/emSign* /usr/share/ca-certificates/mozilla/emSign* && (update-ca-certificates --fresh 2>/dev/null || true)
 
 # Create non-root user
 RUN addgroup -g 1000 byee && \
